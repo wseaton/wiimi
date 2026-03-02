@@ -1,0 +1,2228 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>wiimi dependency graph</title>
+<!--SCRIPTS-->
+<style>
+/*BASE_STYLES*/
+
+.layout {
+  display: flex;
+  height: calc(100vh - 33px);
+  overflow: hidden;
+}
+.layout.hidden { display: none; }
+
+/* -- sidebar -- */
+.sidebar {
+  width: 380px;
+  min-width: 0;
+  border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  transition: width 0.2s ease;
+}
+.sidebar.collapsed {
+  width: 0;
+  border-right: none;
+}
+.sidebar.collapsed > *:not(.sidebar-toggle) {
+  display: none;
+}
+.sidebar-toggle {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  z-index: 20;
+  padding: 4px 8px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text);
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 11px;
+}
+.sidebar-header {
+  padding: 16px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+.sidebar-header h1 {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text-bright);
+  margin-bottom: 2px;
+  word-break: break-all;
+}
+.sidebar-header .subtitle {
+  color: var(--text-dim);
+  font-size: 11px;
+}
+.meta-row {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-top: 6px;
+  font-size: 11px;
+}
+.meta-tag {
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 1px 6px;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.meta-tag.expanded {
+  white-space: normal;
+  word-break: break-all;
+}
+.effective-bar {
+  margin-top: 8px;
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+/* tabs */
+.tabs {
+  display: flex;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+.tab {
+  flex: 1;
+  padding: 8px;
+  text-align: center;
+  font-size: 12px;
+  cursor: pointer;
+  color: var(--text-dim);
+  border-bottom: 2px solid transparent;
+  user-select: none;
+}
+.tab:hover { color: var(--text); }
+.tab.active {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+}
+
+/* sidebar panels */
+.sidebar-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 8px;
+}
+.sidebar-body.hidden { display: none; }
+
+/* search */
+.search-box {
+  width: 100%;
+  padding: 6px 8px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text);
+  font-family: inherit;
+  font-size: 12px;
+  outline: none;
+  margin-bottom: 8px;
+}
+.search-box:focus { border-color: var(--accent); }
+.search-box::placeholder { color: var(--text-dim); }
+
+/* profile list */
+.profile-group {
+  margin-bottom: 6px;
+}
+.profile-header {
+  padding: 5px 8px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  user-select: none;
+  font-size: 12px;
+}
+.profile-header:hover { background: var(--bg-hover); }
+.profile-header .arrow { color: var(--text-dim); font-size: 9px; width: 10px; transition: transform 0.15s; }
+.profile-header .arrow.open { transform: rotate(90deg); }
+.profile-header .count { color: var(--text-dim); font-size: 10px; margin-left: auto; }
+.profile-body { padding-left: 12px; }
+.profile-body.collapsed { display: none; }
+
+.node-item {
+  padding: 3px 6px;
+  border-radius: 3px;
+  cursor: pointer;
+  font-size: 11px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--text);
+}
+.node-item:hover { background: var(--bg-hover); }
+.node-item.active { background: rgba(203, 166, 247, 0.2); }
+
+/* cc bar inline */
+.cc-bar {
+  display: inline-flex;
+  gap: 1px;
+  vertical-align: middle;
+  height: 10px;
+  margin-left: 4px;
+}
+.cc-bar .c {
+  width: 6px;
+  height: 10px;
+  border-radius: 1px;
+}
+.cc-bar .c.sass { background: var(--green); }
+.cc-bar .c.ptx { background: var(--blue); }
+.cc-bar .c.empty { background: var(--bg); border: 1px solid var(--border); width: 4px; height: 8px; margin-top: 1px; }
+
+/* sm chiclets */
+.sm-chiclets { display: flex; flex-wrap: wrap; gap: 3px; margin-top: 2px; }
+.sm-chip {
+  display: inline-block;
+  padding: 1px 4px;
+  border-radius: 3px;
+  font-size: 9px;
+  font-weight: 600;
+  font-family: inherit;
+  line-height: 1.3;
+}
+.sm-chip.sass { background: var(--green); color: #fbf1c7; }
+.sm-chip.ptx { background: var(--blue); color: #fbf1c7; }
+
+/* detail panel */
+.detail-panel {
+  border-top: 1px solid var(--border);
+  padding: 12px;
+  flex-shrink: 0;
+  max-height: 40%;
+  overflow-y: auto;
+  font-size: 11px;
+  display: none;
+}
+.detail-panel.open { display: block; }
+.detail-panel h3 {
+  font-size: 13px;
+  color: var(--text-bright);
+  margin-bottom: 6px;
+  word-break: break-all;
+}
+.detail-panel dt { color: var(--text-dim); margin-top: 4px; }
+.detail-panel dd { color: var(--text); margin-left: 8px; word-break: break-all; }
+.priority-badge {
+  display: inline-block;
+  padding: 1px 5px;
+  border-radius: 3px;
+  font-size: 9px;
+  font-weight: 600;
+}
+.priority-badge.Entrypoint { background: #89b4fa33; color: var(--blue); }
+.priority-badge.PythonExtension { background: #a6e3a133; color: var(--green); }
+.priority-badge.LinkerLibrary { background: #f9e2af33; color: var(--yellow); }
+.priority-badge.PathBinary { background: #cba6f733; color: var(--accent); }
+.priority-badge.LooseGpuFile { background: #f38ba833; color: var(--red); }
+
+/* -- graph area -- */
+.graph-area {
+  flex: 1;
+  position: relative;
+  background: var(--bg);
+}
+#cy {
+  width: 100%;
+  height: 100%;
+}
+.graph-controls {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  display: flex;
+  gap: 6px;
+  z-index: 10;
+}
+.graph-btn {
+  padding: 4px 10px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text);
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 11px;
+}
+.graph-btn:hover { background: var(--bg-hover); }
+
+/* legend overlay */
+.legend {
+  position: absolute;
+  bottom: 12px;
+  left: 12px;
+  display: flex;
+  gap: 12px;
+  font-size: 10px;
+  color: var(--text-dim);
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 4px 10px;
+  z-index: 10;
+}
+.legend-item { display: flex; align-items: center; gap: 4px; }
+.legend-swatch { width: 10px; height: 10px; border-radius: 2px; }
+
+/* cytoscape html node labels */
+.cy-node-label {
+  text-align: center;
+  font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', monospace;
+  pointer-events: none;
+  white-space: nowrap;
+}
+.cy-node-name {
+  font-size: 8px;
+  font-weight: 600;
+  color: #282828;
+  line-height: 1.3;
+  margin-bottom: 2px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.cy-node-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px;
+  justify-content: center;
+  max-width: 220px;
+}
+.cy-chip {
+  display: inline-block;
+  padding: 0px 3px;
+  border-radius: 2px;
+  font-size: 7px;
+  font-weight: 700;
+  color: #fbf1c7;
+  line-height: 1.4;
+  white-space: nowrap;
+}
+.cy-chip-ptx {
+  background: #076678 !important;
+  border: 1px dashed #458588;
+}
+
+/* insights full page */
+.insights-page {
+  display: none;
+  height: calc(100vh - 33px);
+  overflow-y: auto;
+  padding: 24px 32px;
+  background: var(--bg);
+}
+.insights-page.open { display: block; }
+.insights-page h2 {
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--text-bright);
+  margin-bottom: 4px;
+}
+.insights-page .subtitle {
+  font-size: 11px;
+  color: var(--text-dim);
+  margin-bottom: 16px;
+}
+.insights-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-width: 1000px;
+}
+
+/* insights panel */
+.insight-section {
+  margin-bottom: 0;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-surface);
+  overflow: hidden;
+}
+.insight-section h4 {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-bright);
+  margin: 0;
+  padding: 8px 10px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  user-select: none;
+  background: var(--bg-surface);
+}
+.insight-section h4:hover { background: var(--bg-hover); }
+.insight-section h4::after {
+  content: '\25BC';
+  font-size: 8px;
+  color: var(--text-dim);
+  margin-left: auto;
+  transition: transform 0.15s;
+}
+.insight-section.collapsed h4::after { transform: rotate(-90deg); }
+.insight-section-body {
+  padding: 6px 10px 10px;
+}
+.insight-section.collapsed .insight-section-body { display: none; }
+.insight-section h4 .badge {
+  font-size: 9px;
+  font-weight: 700;
+  padding: 1px 5px;
+  border-radius: 3px;
+}
+.badge-warn { background: #f9e2af; color: var(--yellow); }
+.badge-error { background: #f38ba833; color: var(--red); }
+.badge-info { background: #89b4fa33; color: var(--blue); }
+.badge-ok { background: #a6e3a133; color: var(--green); }
+.insight-table {
+  width: 100%;
+  font-size: 10px;
+  border-collapse: collapse;
+  table-layout: auto;
+}
+.insight-table th,
+.insight-table td {
+  word-break: break-word;
+  overflow-wrap: anywhere;
+}
+.insight-table th {
+  text-align: left;
+  color: var(--text-dim);
+  font-weight: 600;
+  border-bottom: 1px solid var(--border);
+  padding: 2px 4px;
+}
+.insight-table td {
+  padding: 2px 4px;
+  border-bottom: 1px solid var(--border);
+  vertical-align: top;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+  max-width: 300px;
+}
+.insight-table tr:hover td { background: var(--bg-hover); }
+.collision-group {
+  margin-bottom: 6px;
+  padding: 4px 6px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font-size: 10px;
+}
+.collision-group .soname {
+  font-weight: 600;
+  color: var(--text-bright);
+  margin-bottom: 2px;
+}
+.collision-group .path-entry {
+  color: var(--text);
+  padding: 1px 0;
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+}
+.collision-group .path-entry .size { color: var(--text-dim); white-space: nowrap; }
+
+/* sm filter bar */
+.sm-filter-bar {
+  position: absolute;
+  bottom: 42px;
+  left: 12px;
+  display: flex;
+  gap: 4px;
+  z-index: 10;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 4px 8px;
+  font-size: 10px;
+  align-items: center;
+  flex-wrap: wrap;
+  max-width: 60%;
+}
+.sm-filter-bar .label {
+  color: var(--text-dim);
+  font-size: 9px;
+  margin-right: 2px;
+}
+.sm-filter-chip {
+  padding: 2px 6px;
+  border-radius: 3px;
+  cursor: pointer;
+  font-size: 9px;
+  font-weight: 600;
+  color: #fbf1c7;
+  user-select: none;
+  opacity: 0.4;
+  transition: opacity 0.15s;
+}
+.sm-filter-chip.active {
+  opacity: 1;
+  box-shadow: 0 0 0 2px var(--text-bright);
+}
+.sm-filter-chip:hover {
+  opacity: 0.8;
+}
+
+/* detail dep links */
+.dep-link {
+  cursor: pointer;
+  color: var(--blue);
+  text-decoration: underline;
+  text-decoration-style: dotted;
+}
+.dep-link:hover {
+  color: var(--accent);
+}
+.dep-table {
+  width: 100%;
+  font-size: 10px;
+  border-collapse: collapse;
+  margin-top: 4px;
+}
+.dep-table td {
+  padding: 2px 4px;
+  border-bottom: 1px solid var(--border);
+  vertical-align: top;
+}
+.dep-table td:first-child {
+  white-space: nowrap;
+}
+.dep-section-header {
+  color: var(--text-dim);
+  font-size: 10px;
+  font-weight: 600;
+  margin-top: 8px;
+  margin-bottom: 2px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+/* tooltip */
+.cy-tooltip {
+  position: absolute;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 6px 10px;
+  font-size: 11px;
+  color: var(--text);
+  pointer-events: none;
+  z-index: 100;
+  max-width: 350px;
+  white-space: pre-wrap;
+  display: none;
+}
+
+/* environment chips in header */
+.env-row {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+  margin-top: 6px;
+  font-size: 10px;
+}
+.env-chip {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 1px 5px;
+  white-space: nowrap;
+}
+.env-chip.os { border-color: var(--blue); color: var(--blue); }
+.env-chip.pkg { border-color: var(--green); color: var(--green); }
+
+/* detail panel path annotations */
+.detail-paths {
+  font-size: 10px;
+  color: var(--text-dim);
+  margin-top: 2px;
+  word-break: break-all;
+}
+.detail-paths .path-label {
+  color: var(--yellow);
+  font-weight: 600;
+  font-size: 9px;
+}
+
+/* environment insight tables */
+.env-pkg-table {
+  width: 100%;
+  font-size: 10px;
+  border-collapse: collapse;
+}
+.env-pkg-table th {
+  text-align: left;
+  color: var(--text-dim);
+  padding: 2px 6px;
+  border-bottom: 1px solid var(--border);
+  font-weight: 600;
+  font-size: 9px;
+}
+.env-pkg-table td {
+  padding: 2px 6px;
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 40%, transparent);
+}
+.symlink-chain {
+  font-size: 10px;
+  color: var(--text-dim);
+  padding: 1px 0;
+}
+.symlink-chain .arrow { color: var(--accent); margin: 0 4px; }
+</style>
+</head>
+<body>
+
+<div class="masthead">
+  <div class="masthead-tab active" data-view="graph">Graph</div>
+  <div class="masthead-tab" data-view="environment">Environment</div>
+  <div class="masthead-tab" data-view="insights">Insights</div>
+</div>
+<div class="layout">
+  <div class="sidebar" id="sidebar">
+    <div class="sidebar-header" id="header"></div>
+    <div class="tabs">
+      <div class="tab active" data-tab="profiles">Graph</div>
+      <div class="tab" data-tab="list">All</div>
+    </div>
+    <input class="search-box" id="search" type="text" placeholder="Search binaries...">
+    <div class="sidebar-body" id="profiles-panel"></div>
+    <div class="sidebar-body hidden" id="list-panel"></div>
+    <div class="detail-panel" id="detail"></div>
+  </div>
+  <div class="graph-area">
+    <button class="sidebar-toggle" id="sidebar-toggle" title="Toggle sidebar">&#9776;</button>
+    <div id="cy"></div>
+    <div class="sm-filter-bar" id="sm-filter-bar">
+      <span class="label">Filter SM:</span>
+    </div>
+    <div class="graph-controls">
+      <button class="graph-btn" id="reset-filter">Reset</button>
+      <button class="graph-btn" id="fit-btn">Fit</button>
+      <button class="graph-btn" id="zoom-in">+</button>
+      <button class="graph-btn" id="zoom-out">-</button>
+    </div>
+    <div class="legend">
+      <div class="legend-item"><div class="legend-swatch" style="background:#b16286"></div> Maxwell</div>
+      <div class="legend-item"><div class="legend-swatch" style="background:#d65d0e"></div> Pascal</div>
+      <div class="legend-item"><div class="legend-swatch" style="background:#d79921"></div> Volta/Turing</div>
+      <div class="legend-item"><div class="legend-swatch" style="background:#98971a"></div> Ampere</div>
+      <div class="legend-item"><div class="legend-swatch" style="background:#689d6a"></div> Hopper</div>
+      <div class="legend-item"><div class="legend-swatch" style="background:#458588"></div> Blackwell+</div>
+      <div class="legend-item"><div class="legend-swatch" style="background:#076678;border:1px dashed #458588"></div> PTX</div>
+    </div>
+    <div class="cy-tooltip" id="tooltip"></div>
+  </div>
+</div>
+<div class="insights-page" id="insights-page"></div>
+<div class="insights-page" id="environment-page"></div>
+
+<script>
+const DATA = /*GRAPH_DATA*/null;
+
+(function() {
+  if (!DATA) return;
+
+  const graph = DATA.graph;
+  const smMin = DATA.sm_min;
+  const smMax = DATA.sm_max;
+
+  // Build path-keyed lookup from the deduplicated binaries array
+  const binariesByPath = {};
+  for (const b of (DATA.binaries || [])) {
+    binariesByPath[b.path] = b;
+  }
+
+  // ---- helpers ----
+
+  function smVal(cc) { return cc.major * 10 + cc.minor; }
+
+  function ccKey(cubins, ptx) {
+    const c = cubins.map(smVal).sort((a,b) => a-b).join(',');
+    const p = ptx.map(smVal).sort((a,b) => a-b).join(',');
+    return c + (p ? '+' + p : '');
+  }
+
+  function ccLabel(cubins, ptx) {
+    if (!cubins.length && !ptx.length) return 'no CUDA';
+    const parts = [];
+    if (cubins.length) {
+      const sms = cubins.map(smVal).sort((a,b) => a-b);
+      if (sms.length <= 3) parts.push(sms.map(s => 'sm_'+s).join(', '));
+      else parts.push('sm_'+sms[0]+'..sm_'+sms[sms.length-1]+' ('+sms.length+' archs)');
+    }
+    if (ptx.length) parts.push('+PTX');
+    return parts.join(' ');
+  }
+
+  function formatSize(bytes) {
+    if (bytes < 1024) return bytes + ' B';
+    if (bytes < 1048576) return (bytes / 1024).toFixed(1) + ' KB';
+    if (bytes < 1073741824) return (bytes / 1048576).toFixed(1) + ' MB';
+    return (bytes / 1073741824).toFixed(2) + ' GB';
+  }
+
+  function hasCuda(node) { return node && (node.cubins.length > 0 || node.ptx.length > 0); }
+
+  function escHtml(s) { return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+
+  function ccBarHTML(cubins, ptx) {
+    if (smMin > smMax || smMin === 0 && smMax === 0) return '';
+    const cs = new Set(cubins.map(smVal));
+    const ps = new Set(ptx.map(smVal));
+    let h = '<span class="cc-bar">';
+    for (let sm = smMin; sm <= smMax; sm += 5) {
+      if (cs.has(sm)) h += '<span class="c sass" title="sm_'+sm+'"></span>';
+      else if (ps.has(sm)) h += '<span class="c ptx" title="sm_'+sm+'"></span>';
+      else h += '<span class="c empty"></span>';
+    }
+    return h + '</span>';
+  }
+
+  function smChicletHTML(cubins, ptx) {
+    if (!cubins.length && !ptx.length) return '<span class="sm-chiclets"><span style="color:var(--text-dim);font-size:9px">no CUDA</span></span>';
+    let h = '<span class="sm-chiclets">';
+    for (const c of cubins.map(smVal).sort((a,b) => a-b)) {
+      h += '<span class="sm-chip" style="background:' + smGenColor(c) + ';color:#fbf1c7" title="' + smGenName(c) + '">sm_' + c + '</span>';
+    }
+    for (const p of ptx.map(smVal).sort((a,b) => a-b)) {
+      h += '<span class="sm-chip" style="background:#076678;color:#fbf1c7;border:1px dashed #458588" title="PTX">PTX ' + p + '</span>';
+    }
+    return h + '</span>';
+  }
+
+  // Color per SM generation for chiclets
+  function smGenColor(sm) {
+    if (sm < 50) return '#928374';       // ancient (gray)
+    if (sm < 60) return '#b16286';       // Maxwell (purple)
+    if (sm < 70) return '#d65d0e';       // Pascal (orange)
+    if (sm < 80) return '#d79921';       // Volta/Turing (yellow)
+    if (sm < 90) return '#98971a';       // Ampere (green)
+    if (sm < 100) return '#689d6a';      // Hopper (aqua)
+    return '#458588';                    // Blackwell+ (blue)
+  }
+
+  function smGenName(sm) {
+    if (sm < 50) return 'Pre-Maxwell';
+    if (sm < 60) return 'Maxwell';
+    if (sm < 70) return 'Pascal';
+    if (sm < 80) return 'Volta/Turing';
+    if (sm < 90) return 'Ampere';
+    if (sm < 100) return 'Hopper';
+    return 'Blackwell+';
+  }
+
+  // Build HTML content for cytoscape node overlay
+  function nodeChipsHTML(cubins, ptx) {
+    if ((!cubins || !cubins.length) && (!ptx || !ptx.length)) return '';
+    let h = '';
+    if (cubins) {
+      for (const c of cubins.map(smVal).sort((a,b) => a-b)) {
+        h += '<span class="cy-chip" style="background:' + smGenColor(c) + '" title="sm_' + c + ' (' + smGenName(c) + ')">sm_' + c + '</span>';
+      }
+    }
+    if (ptx) {
+      for (const p of ptx.map(smVal).sort((a,b) => a-b)) {
+        h += '<span class="cy-chip cy-chip-ptx" title="PTX sm_' + p + '">PTX ' + p + '</span>';
+      }
+    }
+    return h;
+  }
+
+  // ---- build cytoscape graph ----
+  //
+  // Strategy:
+  //  1. Show ALL CUDA nodes
+  //  2. Show non-CUDA "bridge" nodes (on a path between two CUDA nodes)
+  //  3. Auto-collapse large homogeneous groups (same dir + same CC profile, >25 members)
+  //  4. Click-to-expand on collapsed groups
+
+  const allNodes = graph.nodes;
+  const COLLAPSE_THRESHOLD = 25;
+
+  // Step 1: identify all visible nodes
+  const visibleNodes = new Set();
+
+  // All CUDA nodes are visible
+  for (const [soname, node] of Object.entries(allNodes)) {
+    if (hasCuda(node)) visibleNodes.add(soname);
+  }
+
+  // Bridge non-CUDA nodes: depended on by a CUDA node AND depends on a CUDA node
+  for (const [soname, node] of Object.entries(allNodes)) {
+    if (hasCuda(node)) continue;
+    const hasCudaDependent = node.deps.some(d => allNodes[d] && hasCuda(allNodes[d]));
+    if (!hasCudaDependent) continue;
+    // Check if any CUDA node depends on this one
+    for (const [other, otherNode] of Object.entries(allNodes)) {
+      if (hasCuda(otherNode) && otherNode.deps.includes(soname)) {
+        visibleNodes.add(soname);
+        break;
+      }
+    }
+  }
+
+  // Step 2: group visible nodes by (directory, CC profile) for auto-collapse
+  function dirKey(path) {
+    const parts = path.split('/');
+    const spIdx = parts.indexOf('site-packages');
+    if (spIdx >= 0 && spIdx + 1 < parts.length) return parts[spIdx + 1];
+    if (parts.length >= 2) return parts[parts.length - 2];
+    return '/';
+  }
+
+  const groupMap = {};  // "dir|ccKey" → [sonames]
+  for (const soname of visibleNodes) {
+    const node = allNodes[soname];
+    if (!node) continue;
+    const gk = dirKey(node.path) + '|' + ccKey(node.cubins, node.ptx);
+    if (!groupMap[gk]) groupMap[gk] = [];
+    groupMap[gk].push(soname);
+  }
+
+  // Step 3: decide which nodes are individual vs collapsed
+  const individualNodes = new Set();
+  const clusters = {};       // clusterId → { key, ccProfile, members[], cubinVals[], ptxVals[], label }
+  const nodeToCluster = {};  // soname → clusterId
+
+  for (const [gk, members] of Object.entries(groupMap)) {
+    if (members.length > COLLAPSE_THRESHOLD) {
+      const [dir] = gk.split('|');
+      const clusterId = 'cluster_' + gk.replace(/[^a-zA-Z0-9]/g, '_');
+      const sample = allNodes[members[0]];
+      const cubinVals = sample ? sample.cubins.map(smVal).sort((a,b) => a-b) : [];
+      const ptxVals = sample ? sample.ptx.map(smVal).sort((a,b) => a-b) : [];
+      clusters[clusterId] = {
+        id: clusterId,
+        key: dir,
+        ccProfile: gk.split('|')[1],
+        members: members,
+        cubinVals: cubinVals,
+        ptxVals: ptxVals,
+        label: members.length + ' in ' + dir,
+      };
+      for (const m of members) nodeToCluster[m] = clusterId;
+    } else {
+      for (const m of members) individualNodes.add(m);
+    }
+  }
+
+  // Step 4: build cytoscape elements
+  function nodeSize(soname, node) {
+    const chipCount = (node.cubins ? node.cubins.length : 0) + (node.ptx ? node.ptx.length : 0);
+    const chipsPerRow = 5;
+    const chipRows = chipCount > 0 ? Math.ceil(chipCount / chipsPerRow) : 0;
+    const pkgExtra = node.package ? 10 : 0;
+    const nameWidth = soname.length * 7 + 16;
+    const chipWidth = Math.min(chipCount, chipsPerRow) * 42 + 12;
+    return {
+      w: Math.max(nameWidth, chipWidth, 90),
+      h: Math.max(20 + chipRows * 16 + pkgExtra, 24),
+    };
+  }
+
+  const cyElements = [];
+
+  // Individual nodes
+  for (const soname of individualNodes) {
+    const node = allNodes[soname];
+    if (!node) continue;
+    const sz = nodeSize(soname, node);
+    cyElements.push({
+      data: {
+        id: soname,
+        label: '',
+        type: hasCuda(node) ? 'individual' : 'bridge',
+        nodeWidth: sz.w,
+        nodeHeight: sz.h,
+        priority: node.priority,
+        path: node.path,
+        cubins: node.cubins,
+        ptx: node.ptx,
+        size: node.size,
+        deps: node.deps,
+        unresolved: node.unresolved,
+        package: node.package || null,
+      },
+    });
+  }
+
+  // Cluster nodes
+  for (const [clusterId, cluster] of Object.entries(clusters)) {
+    const chipCount = cluster.cubinVals.length + cluster.ptxVals.length;
+    const chipsPerRow = 5;
+    const chipRows = chipCount > 0 ? Math.ceil(chipCount / chipsPerRow) : 0;
+    const labelWidth = cluster.label.length * 7 + 16;
+    const chipWidth = Math.min(chipCount, chipsPerRow) * 42 + 12;
+    cyElements.push({
+      data: {
+        id: clusterId,
+        label: '',
+        type: 'cluster',
+        nodeWidth: Math.max(labelWidth, chipWidth, 100),
+        nodeHeight: 20 + chipRows * 16,
+        memberCount: cluster.members.length,
+        members: cluster.members,
+        dirKey: cluster.key,
+        clusterLabel: cluster.label,
+        cubinVals: cluster.cubinVals,
+        ptxVals: cluster.ptxVals,
+      },
+    });
+  }
+
+  // Step 5: build edges (arrows point dependency → dependent)
+  const edgeSet = new Set();
+
+  function addEdge(src, tgt) {
+    const ek = src + '->' + tgt;
+    if (edgeSet.has(ek)) return;
+    edgeSet.add(ek);
+    cyElements.push({ data: { source: src, target: tgt } });
+  }
+
+  // Edges between individual nodes
+  for (const soname of individualNodes) {
+    const node = allNodes[soname];
+    if (!node) continue;
+    for (const dep of node.deps) {
+      if (individualNodes.has(dep)) {
+        addEdge(dep, soname);
+      }
+    }
+  }
+
+  // Edges involving clusters
+  for (const [clusterId, cluster] of Object.entries(clusters)) {
+    const seenDeps = new Set();
+    for (const member of cluster.members) {
+      const node = allNodes[member];
+      if (!node) continue;
+      for (const dep of node.deps) {
+        if (seenDeps.has(dep)) continue;
+        seenDeps.add(dep);
+        if (individualNodes.has(dep)) {
+          addEdge(dep, clusterId);
+        } else if (nodeToCluster[dep] && nodeToCluster[dep] !== clusterId) {
+          addEdge(nodeToCluster[dep], clusterId);
+        }
+      }
+    }
+  }
+
+  // Edges from individual nodes to clusters they depend on
+  for (const soname of individualNodes) {
+    const node = allNodes[soname];
+    if (!node) continue;
+    for (const dep of node.deps) {
+      if (nodeToCluster[dep]) {
+        addEdge(nodeToCluster[dep], soname);
+      }
+    }
+  }
+
+  // ---- click-to-expand for cluster nodes ----
+
+  function expandCluster(clusterId) {
+    const cluster = clusters[clusterId];
+    if (!cluster) return;
+
+    // Get the cluster node position before removing it
+    const clusterNode = cy.getElementById(clusterId);
+    if (!clusterNode.length) return;
+    const pos = clusterNode.position();
+
+    // Remove the cluster node (and its edges)
+    cy.remove(clusterNode);
+
+    // Add individual member nodes in a grid around where the cluster was
+    const members = cluster.members;
+    const cols = Math.ceil(Math.sqrt(members.length));
+    const spacing = 120;
+    const newElements = [];
+
+    for (let i = 0; i < members.length; i++) {
+      const soname = members[i];
+      const node = allNodes[soname];
+      if (!node) continue;
+      const row = Math.floor(i / cols);
+      const col = i % cols;
+      const sz = nodeSize(soname, node);
+      newElements.push({
+        group: 'nodes',
+        data: {
+          id: soname,
+          label: '',
+          type: hasCuda(node) ? 'individual' : 'bridge',
+          nodeWidth: sz.w,
+          nodeHeight: sz.h,
+          priority: node.priority,
+          path: node.path,
+          cubins: node.cubins,
+          ptx: node.ptx,
+          size: node.size,
+          deps: node.deps,
+          unresolved: node.unresolved,
+          package: node.package || null,
+        },
+        position: {
+          x: pos.x + (col - cols / 2) * spacing,
+          y: pos.y + (row - members.length / cols / 2) * spacing,
+        },
+      });
+
+      // Move from cluster tracking to individual
+      individualNodes.add(soname);
+      delete nodeToCluster[soname];
+    }
+
+    // Add the new nodes
+    cy.add(newElements);
+
+    // Now add edges for the new nodes
+    const newEdges = [];
+    for (const soname of members) {
+      const node = allNodes[soname];
+      if (!node) continue;
+      for (const dep of node.deps) {
+        if (individualNodes.has(dep) || cy.getElementById(dep).length) {
+          const ek = dep + '->' + soname;
+          if (!edgeSet.has(ek)) {
+            edgeSet.add(ek);
+            newEdges.push({ group: 'edges', data: { source: dep, target: soname } });
+          }
+        }
+        if (nodeToCluster[dep]) {
+          const cid = nodeToCluster[dep];
+          const ek = cid + '->' + soname;
+          if (!edgeSet.has(ek)) {
+            edgeSet.add(ek);
+            newEdges.push({ group: 'edges', data: { source: cid, target: soname } });
+          }
+        }
+      }
+      // Also connect other individual nodes that depend on this member
+      for (const otherSoname of individualNodes) {
+        if (otherSoname === soname) continue;
+        const otherNode = allNodes[otherSoname];
+        if (!otherNode) continue;
+        if (otherNode.deps.includes(soname)) {
+          const ek = soname + '->' + otherSoname;
+          if (!edgeSet.has(ek)) {
+            edgeSet.add(ek);
+            newEdges.push({ group: 'edges', data: { source: soname, target: otherSoname } });
+          }
+        }
+      }
+    }
+    cy.add(newEdges);
+
+    // Clean up cluster record
+    delete clusters[clusterId];
+
+    // Re-run layout on just the new elements for a clean arrangement
+    const addedIds = members.filter(m => cy.getElementById(m).length);
+    if (addedIds.length > 0) {
+      const addedEles = cy.collection();
+      for (const id of addedIds) addedEles.merge(cy.getElementById(id));
+      // Run a local grid layout then animate to fit
+      cy.fit(undefined, 40);
+    }
+
+    // Re-render sidebar to show expanded nodes
+    renderProfiles();
+    renderList();
+  }
+
+  // ---- reverse dependency index: who depends on each node ----
+  const reverseDeps = {};
+  for (const [soname, node] of Object.entries(allNodes)) {
+    for (const dep of node.deps) {
+      if (!reverseDeps[dep]) reverseDeps[dep] = [];
+      reverseDeps[dep].push(soname);
+    }
+  }
+
+  // ---- collect all SM values present in the graph for the filter bar ----
+  const allSmValues = new Set();
+  for (const [_, node] of Object.entries(allNodes)) {
+    for (const c of node.cubins) allSmValues.add(smVal(c));
+    for (const p of node.ptx) allSmValues.add(smVal(p));
+  }
+  const sortedSmValues = [...allSmValues].sort((a, b) => a - b);
+  let activeSmFilter = null; // null = no filter
+
+  // ---- header ----
+
+  function renderHeader() {
+    const h = document.getElementById('header');
+    const title = document.createElement('h1');
+    title.textContent = DATA.image;
+    h.appendChild(title);
+
+    const parts = [];
+    if (DATA.metadata.cuda_version) parts.push('CUDA ' + DATA.metadata.cuda_version);
+    parts.push(DATA.reachable_count + ' reachable');
+    if (DATA.dormant_count > 0) parts.push(DATA.dormant_count + ' dormant');
+    const sub = document.createElement('div');
+    sub.className = 'subtitle';
+    sub.textContent = parts.join(' | ');
+    h.appendChild(sub);
+
+    const metaRow = document.createElement('div');
+    metaRow.className = 'meta-row';
+    for (const [label, val] of [['CUDA', DATA.metadata.cuda_version], ['TORCH_ARCH', DATA.metadata.torch_arch_list], ['REQUIRE', DATA.metadata.nvidia_require], ['NVSHMEM', DATA.metadata.nvshmem_architectures]]) {
+      if (!val) continue;
+      const tag = document.createElement('span');
+      tag.className = 'meta-tag';
+      tag.textContent = label + ': ' + val;
+      tag.title = val;
+      tag.addEventListener('click', () => tag.classList.toggle('expanded'));
+      metaRow.appendChild(tag);
+    }
+    h.appendChild(metaRow);
+
+    // Environment chips (OS + python environments)
+    const env = DATA.environment;
+    if (env) {
+      const envRow = document.createElement('div');
+      envRow.className = 'env-row';
+      if (env.os) {
+        const chip = document.createElement('span');
+        chip.className = 'env-chip os';
+        chip.textContent = env.os.pretty_name || (env.os.id + ' ' + env.os.version_id);
+        envRow.appendChild(chip);
+      }
+      const pyEnvsList = env.python_environments || [];
+      for (const pyEnv of pyEnvsList) {
+        const chip = document.createElement('span');
+        chip.className = 'env-chip pkg';
+        chip.textContent = (pyEnv.label || pyEnv.site_packages_dir) + ' (' + (pyEnv.packages || []).length + ' pkgs)';
+        envRow.appendChild(chip);
+      }
+      if (envRow.children.length > 0) h.appendChild(envRow);
+    }
+
+    for (const w of DATA.warnings) {
+      // Only surface critical diagnostics here; soname collisions live in Insights
+      if (w.startsWith('soname collision:')) continue;
+      const warn = document.createElement('div');
+      warn.style.cssText = 'color:var(--red);font-size:11px;margin-top:4px;';
+      warn.textContent = w;
+      h.appendChild(warn);
+    }
+  }
+
+  // ---- sidebar: graph nodes panel ----
+
+  function renderProfiles() {
+    const panel = document.getElementById('profiles-panel');
+    panel.innerHTML = '';
+
+    // Section 1: Individual nodes (participate in CUDA-to-CUDA edges)
+    if (individualNodes.size > 0) {
+      const section = document.createElement('div');
+      section.className = 'profile-group';
+      const header = document.createElement('div');
+      header.className = 'profile-header';
+      header.style.borderColor = 'var(--accent)';
+      const arrow = document.createElement('span');
+      arrow.className = 'arrow open';
+      arrow.textContent = '\u25B6';
+      header.appendChild(arrow);
+      const label = document.createElement('span');
+      label.innerHTML = '<span style="color:var(--accent)">CUDA Libraries</span>';
+      header.appendChild(label);
+      const count = document.createElement('span');
+      count.className = 'count';
+      count.textContent = individualNodes.size;
+      header.appendChild(count);
+      section.appendChild(header);
+
+      const body = document.createElement('div');
+      body.className = 'profile-body';
+      for (const soname of [...individualNodes].sort()) {
+        const node = allNodes[soname];
+        if (!node) continue;
+        const item = document.createElement('div');
+        item.className = 'node-item';
+        item.innerHTML = escHtml(soname) + ' ' + ccBarHTML(node.cubins, node.ptx);
+        item.title = node.path + (node.size > 0 ? ' (' + formatSize(node.size) + ')' : '');
+        item.dataset.soname = soname;
+        item.dataset.path = node.path;
+        item.addEventListener('click', () => { showDetail(soname); highlightNode(soname); });
+        body.appendChild(item);
+      }
+      section.appendChild(body);
+
+      header.addEventListener('click', () => {
+        body.classList.toggle('collapsed');
+        arrow.classList.toggle('open');
+      });
+      panel.appendChild(section);
+    }
+
+    // Section 2: Directory-grouped leaf clusters
+    const sorted = Object.values(clusters).sort((a, b) => b.members.length - a.members.length);
+    for (const cluster of sorted) {
+      const group = document.createElement('div');
+      group.className = 'profile-group';
+      const header = document.createElement('div');
+      header.className = 'profile-header';
+      const arrow = document.createElement('span');
+      arrow.className = 'arrow';
+      arrow.textContent = '\u25B6';
+      header.appendChild(arrow);
+      const labelSpan = document.createElement('span');
+      labelSpan.textContent = cluster.key;
+      header.appendChild(labelSpan);
+      const count = document.createElement('span');
+      count.className = 'count';
+      count.textContent = cluster.members.length;
+      header.appendChild(count);
+      group.appendChild(header);
+
+      const body = document.createElement('div');
+      body.className = 'profile-body collapsed';
+      for (const member of cluster.members.sort()) {
+        const n = allNodes[member];
+        const item = document.createElement('div');
+        item.className = 'node-item';
+        item.innerHTML = escHtml(member) + ' ' + (n ? ccBarHTML(n.cubins, n.ptx) : '');
+        item.title = n ? n.path : member;
+        item.dataset.soname = member;
+        item.addEventListener('click', () => showDetail(member));
+        body.appendChild(item);
+      }
+      group.appendChild(body);
+
+      header.addEventListener('click', () => {
+        body.classList.toggle('collapsed');
+        arrow.classList.toggle('open');
+      });
+      panel.appendChild(group);
+    }
+  }
+
+  // ---- sidebar: all nodes list ----
+
+  function renderList() {
+    const panel = document.getElementById('list-panel');
+    panel.innerHTML = '';
+
+    const cudaNodes = Object.entries(allNodes)
+      .filter(([_, n]) => hasCuda(n))
+      .sort(([a], [b]) => a.localeCompare(b));
+
+    const table = document.createElement('table');
+    table.className = 'insight-table';
+    table.style.fontSize = '11px';
+    const thead = document.createElement('thead');
+    thead.innerHTML = '<tr><th>Binary</th><th>Package</th><th>Archs</th></tr>';
+    table.appendChild(thead);
+    const tbody = document.createElement('tbody');
+
+    for (const [soname, node] of cudaNodes) {
+      const tr = document.createElement('tr');
+      tr.style.cursor = 'pointer';
+      tr.dataset.soname = soname;
+      tr.dataset.path = node.path;
+      const tdName = document.createElement('td');
+      tdName.innerHTML = escHtml(soname);
+      tdName.title = node.path;
+      tr.appendChild(tdName);
+      const tdPkg = document.createElement('td');
+      tdPkg.style.cssText = 'color:var(--text-dim);font-size:10px';
+      tdPkg.textContent = node.package || '-';
+      tr.appendChild(tdPkg);
+      const tdArch = document.createElement('td');
+      tdArch.innerHTML = ccBarHTML(node.cubins, node.ptx);
+      tr.appendChild(tdArch);
+      tr.addEventListener('click', () => { showDetail(soname); highlightNode(soname); });
+      tbody.appendChild(tr);
+    }
+    table.appendChild(tbody);
+    panel.appendChild(table);
+  }
+
+  // ---- detail panel ----
+
+  function depLink(name) {
+    const node = allNodes[name];
+    const cuda = node && hasCuda(node);
+    const icon = cuda ? '<span style="color:var(--green)" title="has CUDA">&#9632;</span>' : '<span style="color:var(--text-dim)" title="no CUDA">&#9633;</span>';
+    return icon + ' <span class="dep-link" data-dep="' + escHtml(name) + '">' + escHtml(name) + '</span>';
+  }
+
+  function showDetail(soname) {
+    const panel = document.getElementById('detail');
+    const node = allNodes[soname];
+    if (!node) { panel.classList.remove('open'); return; }
+
+    const binInfo = binariesByPath[node.path];
+    const rdeps = (reverseDeps[soname] || []).sort();
+
+    let html = '<h3>' + escHtml(soname) + '</h3><dl>';
+    html += '<dt>Path</dt><dd>' + escHtml(node.path) + '</dd>';
+    if (binInfo && binInfo.size > 0) html += '<dt>Size</dt><dd>' + formatSize(binInfo.size) + '</dd>';
+    if (node.package) html += '<dt>Package</dt><dd>' + escHtml(node.package) + '</dd>';
+    if (node.priority) html += '<dt>Type</dt><dd><span class="priority-badge ' + escHtml(node.priority) + '">' + escHtml(node.priority) + '</span></dd>';
+    if (binInfo) html += '<dt>Status</dt><dd>' + (binInfo.reachable ? '<span style="color:var(--green)">reachable</span>' : '<span style="color:var(--text-dim)">dormant</span>') + '</dd>';
+    if (node.cubins.length || node.ptx.length) html += '<dt>Architectures</dt><dd>' + smChicletHTML(node.cubins, node.ptx) + '</dd>';
+    if (binInfo && binInfo.rpath && binInfo.rpath.length) {
+      html += '<dt><span class="path-label">RPATH</span> <span style="color:var(--red);font-size:9px">(deprecated)</span></dt>';
+      html += '<dd class="detail-paths">' + binInfo.rpath.map(escHtml).join('<br>') + '</dd>';
+    }
+    if (binInfo && binInfo.runpath && binInfo.runpath.length) {
+      html += '<dt><span class="path-label">RUNPATH</span></dt>';
+      html += '<dd class="detail-paths">' + binInfo.runpath.map(escHtml).join('<br>') + '</dd>';
+    }
+    html += '</dl>';
+
+    // Outgoing deps table
+    if (node.deps.length) {
+      html += '<div class="dep-section-header">Depends on (' + node.deps.length + ')</div>';
+      html += '<table class="dep-table">';
+      for (const dep of node.deps.sort()) {
+        const dn = allNodes[dep];
+        const smInfo = dn && hasCuda(dn) ? smChicletHTML(dn.cubins, dn.ptx) : '<span style="color:var(--text-dim);font-size:9px">no CUDA</span>';
+        html += '<tr><td>' + depLink(dep) + '</td><td>' + smInfo + '</td></tr>';
+      }
+      html += '</table>';
+    }
+
+    // Incoming deps (who depends on this)
+    if (rdeps.length) {
+      html += '<div class="dep-section-header">Depended on by (' + rdeps.length + ')</div>';
+      html += '<table class="dep-table">';
+      for (const rd of rdeps) {
+        const rn = allNodes[rd];
+        const smInfo = rn && hasCuda(rn) ? smChicletHTML(rn.cubins, rn.ptx) : '<span style="color:var(--text-dim);font-size:9px">no CUDA</span>';
+        html += '<tr><td>' + depLink(rd) + '</td><td>' + smInfo + '</td></tr>';
+      }
+      html += '</table>';
+    }
+
+    // Unresolved
+    if (node.unresolved.length) {
+      html += '<div class="dep-section-header" style="color:var(--red)">Unresolved (' + node.unresolved.length + ')</div>';
+      html += '<div style="font-size:10px;color:var(--red)">' + node.unresolved.map(escHtml).join(', ') + '</div>';
+    }
+
+    panel.innerHTML = html;
+    panel.classList.add('open');
+
+    // Wire up clickable dep links
+    panel.querySelectorAll('.dep-link').forEach(link => {
+      link.addEventListener('click', () => {
+        const target = link.dataset.dep;
+        showDetail(target);
+        highlightNode(target);
+      });
+    });
+
+    // Highlight in sidebar
+    document.querySelectorAll('.node-item.active').forEach(el => el.classList.remove('active'));
+    document.querySelectorAll('.node-item[data-soname="' + soname + '"]').forEach(el => el.classList.add('active'));
+  }
+
+  function showClusterDetail(clusterId) {
+    const panel = document.getElementById('detail');
+    const cluster = clusters[clusterId];
+    if (!cluster) { panel.classList.remove('open'); return; }
+
+    let html = '<h3>' + escHtml(cluster.label) + '</h3>';
+    html += '<dl><dt>Directory</dt><dd>' + escHtml(cluster.key) + '</dd>';
+    html += '<dt>Architectures</dt><dd>' + smChicletHTML(
+      cluster.cubinVals.map(v => ({ major: Math.floor(v/10), minor: v%10 })),
+      cluster.ptxVals.map(v => ({ major: Math.floor(v/10), minor: v%10 }))
+    ) + '</dd>';
+    html += '</dl>';
+    html += '<button class="graph-btn" style="margin:8px 0;width:100%" id="expand-cluster-btn">Expand ' + cluster.members.length + ' nodes</button>';
+    html += '<div style="max-height:200px;overflow-y:auto;font-size:10px;margin-top:4px">';
+    for (const m of cluster.members.sort()) {
+      const n = allNodes[m];
+      const lbl = '<span class="dep-link" data-dep="' + escHtml(m) + '">' + escHtml(m) + '</span>' + (n ? ' ' + ccBarHTML(n.cubins, n.ptx) : '');
+      html += '<div style="padding:1px 0">' + lbl + '</div>';
+    }
+    html += '</div>';
+    panel.innerHTML = html;
+    panel.classList.add('open');
+
+    // Expand button
+    document.getElementById('expand-cluster-btn').addEventListener('click', () => {
+      expandCluster(clusterId);
+      panel.classList.remove('open');
+    });
+
+    // Clickable member links
+    panel.querySelectorAll('.dep-link').forEach(link => {
+      link.addEventListener('click', () => showDetail(link.dataset.dep));
+    });
+  }
+
+  // ---- cytoscape ----
+
+  const cy = cytoscape({
+    container: document.getElementById('cy'),
+    elements: cyElements,
+    style: [
+      {
+        selector: 'node[type="individual"]',
+        style: {
+          'label': '',
+          'background-color': '#ebdbb2',
+          'shape': 'round-rectangle',
+          'width': 'data(nodeWidth)',
+          'height': 'data(nodeHeight)',
+          'border-width': 2,
+          'border-color': '#7c6f64',
+        },
+      },
+      {
+        selector: 'node[type="bridge"]',
+        style: {
+          'label': '',
+          'background-color': '#f2e5bc',
+          'shape': 'round-rectangle',
+          'width': 'data(nodeWidth)',
+          'height': 'data(nodeHeight)',
+          'border-width': 1,
+          'border-color': '#bdae93',
+          'border-style': 'dotted',
+        },
+      },
+      {
+        selector: 'node[type="cluster"]',
+        style: {
+          'label': '',
+          'background-color': '#d5c4a1',
+          'background-opacity': 0.9,
+          'shape': 'round-rectangle',
+          'width': 'data(nodeWidth)',
+          'height': 'data(nodeHeight)',
+          'border-width': 2,
+          'border-color': '#928374',
+          'border-style': 'dashed',
+        },
+      },
+      {
+        selector: 'edge',
+        style: {
+          'width': 1.5,
+          'line-color': '#bdae93',
+          'target-arrow-color': '#7c6f64',
+          'target-arrow-shape': 'triangle',
+          'curve-style': 'bezier',
+          'arrow-scale': 0.8,
+          'opacity': 0.6,
+        },
+      },
+      {
+        selector: 'node:selected',
+        style: {
+          'border-color': '#8f3f71',
+          'border-width': 3,
+        },
+      },
+      {
+        selector: '.highlighted',
+        style: {
+          'border-color': '#8f3f71',
+          'border-width': 3,
+          'opacity': 1,
+        },
+      },
+      {
+        selector: '.highlighted-edge',
+        style: {
+          'line-color': '#8f3f71',
+          'target-arrow-color': '#8f3f71',
+          'width': 2.5,
+          'opacity': 1,
+        },
+      },
+      {
+        selector: '.dimmed',
+        style: {
+          'opacity': 0.15,
+        },
+      },
+    ],
+    layout: {
+      name: 'dagre',
+      rankDir: 'LR',
+      nodeSep: 40,
+      rankSep: 80,
+      edgeSep: 15,
+      padding: 40,
+    },
+    minZoom: 0.1,
+    maxZoom: 5,
+    wheelSensitivity: 0.3,
+  });
+
+  // ---- HTML node labels with SM chiclets ----
+
+  cy.nodeHtmlLabel([
+    {
+      query: 'node[type="individual"]',
+      halign: 'center',
+      valign: 'center',
+      cssClass: '',
+      tpl: function(data) {
+        let html = '<div class="cy-node-label">';
+        html += '<div class="cy-node-name">' + escHtml(data.id) + '</div>';
+        const chips = nodeChipsHTML(data.cubins, data.ptx);
+        if (chips) html += '<div class="cy-node-chips">' + chips + '</div>';
+        if (data.package) html += '<div class="cy-node-pkg" style="font-size:6px;color:#928374;margin-top:1px;overflow:hidden;text-overflow:ellipsis;">' + escHtml(data.package) + '</div>';
+        html += '</div>';
+        return html;
+      },
+    },
+    {
+      query: 'node[type="bridge"]',
+      halign: 'center',
+      valign: 'center',
+      cssClass: '',
+      tpl: function(data) {
+        let html = '<div class="cy-node-label">';
+        html += '<div class="cy-node-name" style="color:#7c6f64">' + escHtml(data.id) + '</div>';
+        html += '<div style="font-size:6px;color:#928374;text-align:center">bridge</div>';
+        html += '</div>';
+        return html;
+      },
+    },
+    {
+      query: 'node[type="cluster"]',
+      halign: 'center',
+      valign: 'center',
+      cssClass: '',
+      tpl: function(data) {
+        let html = '<div class="cy-node-label">';
+        html += '<div class="cy-node-name">' + escHtml(data.clusterLabel || data.id) + '</div>';
+        if (data.cubinVals || data.ptxVals) {
+          let chips = '';
+          if (data.cubinVals) {
+            for (const sm of data.cubinVals) {
+              chips += '<span class="cy-chip" style="background:' + smGenColor(sm) + '" title="sm_' + sm + ' (' + smGenName(sm) + ')">sm_' + sm + '</span>';
+            }
+          }
+          if (data.ptxVals) {
+            for (const sm of data.ptxVals) {
+              chips += '<span class="cy-chip cy-chip-ptx" title="PTX sm_' + sm + '">PTX ' + sm + '</span>';
+            }
+          }
+          if (chips) html += '<div class="cy-node-chips">' + chips + '</div>';
+        }
+        html += '</div>';
+        return html;
+      },
+    },
+  ]);
+
+  // ---- graph interactivity ----
+
+  const tooltip = document.getElementById('tooltip');
+
+  cy.on('tap', 'node', function(evt) {
+    const node = evt.target;
+    const d = node.data();
+    if (d.type === 'cluster') {
+      showClusterDetail(d.id);
+    } else {
+      showDetail(d.id);
+    }
+    highlightNeighbors(node);
+  });
+
+  // Double-click cluster to expand inline
+  cy.on('dbltap', 'node[type="cluster"]', function(evt) {
+    expandCluster(evt.target.data().id);
+  });
+
+  cy.on('tap', function(evt) {
+    if (evt.target === cy) {
+      clearHighlight();
+      document.getElementById('detail').classList.remove('open');
+    }
+  });
+
+  cy.on('mouseover', 'node', function(evt) {
+    const node = evt.target;
+    const d = node.data();
+    const lines = [d.id];
+    if (d.type === 'individual' || d.type === 'bridge') {
+      if (d.path) lines.push(d.path);
+      if (d.size > 0) lines.push('Size: ' + formatSize(d.size));
+      if (d.priority) lines.push('Type: ' + d.priority);
+      if (d.type === 'bridge') lines.push('(bridge: no CUDA, connects CUDA nodes)');
+      if (d.cubins && d.cubins.length) lines.push('SASS: ' + d.cubins.map(c => 'sm_'+smVal(c)).join(', '));
+      if (d.ptx && d.ptx.length) lines.push('PTX: ' + d.ptx.map(c => 'sm_'+smVal(c)).join(', '));
+      if (d.deps && d.deps.length) lines.push('Deps: ' + d.deps.length);
+    }
+    if (d.type === 'cluster') {
+      lines.push(d.memberCount + ' binaries in ' + d.dirKey);
+      lines.push('Double-click to expand');
+    }
+    tooltip.textContent = lines.join('\n');
+    tooltip.style.display = 'block';
+    const pos = evt.renderedPosition;
+    const container = document.getElementById('cy').getBoundingClientRect();
+    tooltip.style.left = (container.left + pos.x + 15) + 'px';
+    tooltip.style.top = (container.top + pos.y - 10) + 'px';
+  });
+
+  cy.on('mouseout', 'node', function() {
+    tooltip.style.display = 'none';
+  });
+
+  function highlightNeighbors(node) {
+    clearHighlight();
+    const neighborhood = node.neighborhood().add(node);
+    cy.elements().addClass('dimmed');
+    neighborhood.removeClass('dimmed');
+    node.addClass('highlighted');
+    node.connectedEdges().addClass('highlighted-edge');
+  }
+
+  function highlightNode(soname) {
+    const node = cy.getElementById(soname);
+    if (node.length) {
+      highlightNeighbors(node);
+      cy.animate({ center: { eles: node }, duration: 300 });
+    }
+  }
+
+  function clearHighlight() {
+    cy.elements().removeClass('dimmed highlighted highlighted-edge');
+  }
+
+  // ---- controls ----
+
+  document.getElementById('sidebar-toggle').addEventListener('click', () => {
+    const sb = document.getElementById('sidebar');
+    sb.classList.toggle('collapsed');
+    // Let cytoscape reclaim the space
+    setTimeout(() => cy.resize(), 250);
+  });
+
+  document.getElementById('fit-btn').addEventListener('click', () => {
+    cy.fit(undefined, 30);
+    clearHighlight();
+  });
+  document.getElementById('zoom-in').addEventListener('click', () => {
+    cy.zoom({ level: cy.zoom() * 1.3, renderedPosition: { x: cy.width() / 2, y: cy.height() / 2 } });
+  });
+  document.getElementById('zoom-out').addEventListener('click', () => {
+    cy.zoom({ level: cy.zoom() / 1.3, renderedPosition: { x: cy.width() / 2, y: cy.height() / 2 } });
+  });
+
+  // ---- SM filter bar ----
+
+  function renderSmFilterBar() {
+    const bar = document.getElementById('sm-filter-bar');
+    for (const sm of sortedSmValues) {
+      const chip = document.createElement('span');
+      chip.className = 'sm-filter-chip';
+      chip.style.background = smGenColor(sm);
+      chip.textContent = 'sm_' + sm;
+      chip.title = smGenName(sm) + ' (sm_' + sm + ')';
+      chip.dataset.sm = sm;
+      chip.addEventListener('click', () => toggleSmFilter(sm, chip));
+      bar.appendChild(chip);
+    }
+  }
+
+  function toggleSmFilter(sm, chip) {
+    if (activeSmFilter === sm) {
+      // Deactivate filter
+      activeSmFilter = null;
+      document.querySelectorAll('.sm-filter-chip').forEach(c => c.classList.remove('active'));
+      cy.nodes().removeClass('dimmed');
+      cy.edges().removeClass('dimmed');
+    } else {
+      // Activate filter for this SM
+      activeSmFilter = sm;
+      document.querySelectorAll('.sm-filter-chip').forEach(c => c.classList.remove('active'));
+      chip.classList.add('active');
+
+      cy.nodes().forEach(node => {
+        const d = node.data();
+        let hasSm = false;
+        if (d.type === 'individual') {
+          if (d.cubins) hasSm = d.cubins.some(c => smVal(c) === sm);
+          if (!hasSm && d.ptx) hasSm = d.ptx.some(c => smVal(c) === sm);
+        } else if (d.type === 'cluster') {
+          if (d.cubinVals) hasSm = d.cubinVals.includes(sm);
+          if (!hasSm && d.ptxVals) hasSm = d.ptxVals.includes(sm);
+        }
+        if (hasSm) {
+          node.removeClass('dimmed');
+        } else {
+          node.addClass('dimmed');
+        }
+      });
+      // Dim edges where either endpoint is dimmed
+      cy.edges().forEach(edge => {
+        if (edge.source().hasClass('dimmed') || edge.target().hasClass('dimmed')) {
+          edge.addClass('dimmed');
+        } else {
+          edge.removeClass('dimmed');
+        }
+      });
+    }
+  }
+
+  // masthead tab switching
+  document.querySelectorAll('.masthead-tab').forEach(tab => {
+    tab.addEventListener('click', () => {
+      document.querySelectorAll('.masthead-tab').forEach(t => t.classList.remove('active'));
+      tab.classList.add('active');
+      const view = tab.dataset.view;
+      document.querySelector('.layout').classList.toggle('hidden', view !== 'graph');
+      document.getElementById('insights-page').classList.toggle('open', view === 'insights');
+      document.getElementById('environment-page').classList.toggle('open', view === 'environment');
+    });
+  });
+
+  document.getElementById('reset-filter').addEventListener('click', () => {
+    activeSmFilter = null;
+    document.querySelectorAll('.sm-filter-chip').forEach(c => c.classList.remove('active'));
+    clearHighlight();
+    cy.fit(undefined, 30);
+  });
+
+  renderSmFilterBar();
+
+  // ---- tabs ----
+
+  document.querySelectorAll('.tab').forEach(tab => {
+    tab.addEventListener('click', () => {
+      document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+      tab.classList.add('active');
+      const target = tab.dataset.tab;
+      document.getElementById('profiles-panel').classList.toggle('hidden', target !== 'profiles');
+      document.getElementById('list-panel').classList.toggle('hidden', target !== 'list');
+    });
+  });
+
+  // ---- search ----
+
+  document.getElementById('search').addEventListener('input', function() {
+    const q = this.value.trim().toLowerCase();
+    // Filter sidebar items
+    document.querySelectorAll('.node-item').forEach(item => {
+      const soname = (item.dataset.soname || '').toLowerCase();
+      const path = (item.dataset.path || '').toLowerCase();
+      const match = !q || soname.includes(q) || path.includes(q);
+      item.style.display = match ? '' : 'none';
+    });
+
+    // Highlight matching graph nodes
+    if (!q) {
+      clearHighlight();
+      return;
+    }
+    cy.elements().addClass('dimmed');
+    cy.nodes().forEach(node => {
+      const d = node.data();
+      const label = (d.label || '').toLowerCase();
+      const path = (d.path || '').toLowerCase();
+      let match = label.includes(q) || path.includes(q);
+      if (!match && d.members) {
+        match = d.members.some(m => m.toLowerCase().includes(q));
+      }
+      if (match) {
+        node.removeClass('dimmed').addClass('highlighted');
+        node.connectedEdges().removeClass('dimmed').addClass('highlighted-edge');
+      }
+    });
+  });
+
+  // ---- insights full page ----
+
+  function renderInsights() {
+    const page = document.getElementById('insights-page');
+    // Already deduplicated by path in Rust (later container layers win)
+    const bins = DATA.binaries || [];
+
+    let html = '<h2>' + escHtml(DATA.image) + '</h2>';
+    html += '<div class="subtitle">Diagnostic insights across ' + bins.length + ' unique binaries</div>';
+    html += '<div class="insights-grid">';
+
+    // 1. Soname collisions: same filename in DIFFERENT directories
+    // Only flag when the directories differ (same dir = layer override, already deduped)
+    const sonameMap = {};
+    for (const b of bins) {
+      const filename = b.path.split('/').pop();
+      const dir = b.path.substring(0, b.path.lastIndexOf('/'));
+      if (!sonameMap[filename]) sonameMap[filename] = [];
+      sonameMap[filename].push({ ...b, dir });
+    }
+    const collisions = Object.entries(sonameMap)
+      .filter(([_, entries]) => {
+        if (entries.length < 2) return false;
+        // Only flag if entries are in different directories
+        const dirs = new Set(entries.map(e => e.dir));
+        return dirs.size > 1;
+      })
+      .sort((a, b) => {
+        // Prioritize collisions involving CUDA binaries
+        const aCuda = a[1].some(e => e.cubins.length > 0 || e.ptx.length > 0);
+        const bCuda = b[1].some(e => e.cubins.length > 0 || e.ptx.length > 0);
+        if (aCuda !== bCuda) return bCuda - aCuda;
+        return b[1].length - a[1].length;
+      });
+
+    // 1. Soname collisions: same filename in DIFFERENT directories
+    html += '<div class="insight-section">';
+    html += '<h4><span class="badge ' + (collisions.length > 0 ? 'badge-warn' : 'badge-ok') + '">' + (collisions.length > 0 ? '!' : '\u2713') + '</span> Soname Collisions (' + collisions.length + ')</h4>';
+    html += '<div class="insight-section-body">';
+    if (collisions.length === 0) {
+      html += '<div style="font-size:10px;color:var(--text-dim)">No soname collisions detected. Each library filename maps to a unique path.</div>';
+    } else {
+      html += '<div style="font-size:9px;color:var(--text-dim);margin-bottom:4px">Same filename found in multiple directories. The linker may load the wrong one depending on LD_LIBRARY_PATH.</div>';
+      for (const [soname, entries] of collisions.slice(0, 20)) {
+        const hasCuda = entries.some(e => e.cubins.length > 0 || e.ptx.length > 0);
+        html += '<div class="collision-group" style="' + (hasCuda ? 'border-color:var(--yellow)' : '') + '">';
+        html += '<div class="soname">' + escHtml(soname) + ' (' + entries.length + ' locations)' + (hasCuda ? ' <span class="badge badge-warn" style="font-size:8px">CUDA</span>' : '') + '</div>';
+        for (const e of entries) {
+          const cuda = (e.cubins.length || e.ptx.length) ? ' ' + smChicletHTML(e.cubins, e.ptx) : '';
+          html += '<div class="path-entry"><span style="word-break:break-all">' + escHtml(e.path) + cuda + '</span><span class="size">' + formatSize(e.size) + '</span></div>';
+        }
+        html += '</div>';
+      }
+      if (collisions.length > 20) html += '<div style="font-size:9px;color:var(--text-dim)">... and ' + (collisions.length - 20) + ' more</div>';
+    }
+    html += '</div></div>';
+
+    // 2. Forward compatibility gaps: CUDA binaries with SASS but no PTX
+    const noPtx = bins.filter(b => b.cubins.length > 0 && b.ptx.length === 0);
+    html += '<div class="insight-section">';
+    html += '<h4><span class="badge ' + (noPtx.length > 0 ? 'badge-warn' : 'badge-ok') + '">' + (noPtx.length > 0 ? '!' : '\u2713') + '</span> Forward Compatibility (' + noPtx.length + ' without PTX)</h4>';
+    html += '<div class="insight-section-body">';
+    if (noPtx.length === 0) {
+      html += '<div style="font-size:10px;color:var(--text-dim)">All CUDA binaries include PTX fallback for forward compatibility.</div>';
+    } else {
+      html += '<div style="font-size:9px;color:var(--text-dim);margin-bottom:4px">These have compiled SASS but no PTX. They will fail on GPU architectures they weren\'t compiled for.</div>';
+      html += '<table class="insight-table"><tr><th>Binary</th><th>Path</th><th>SASS Architectures</th></tr>';
+      for (const b of noPtx.sort((a, b) => b.cubins.length - a.cubins.length).slice(0, 40)) {
+        const filename = b.path.split('/').pop();
+        html += '<tr><td>' + escHtml(filename) + '</td><td>' + escHtml(b.path) + '</td><td>' + smChicletHTML(b.cubins, []) + '</td></tr>';
+      }
+      if (noPtx.length > 40) html += '<tr><td colspan="3" style="color:var(--text-dim)">... and ' + (noPtx.length - 40) + ' more</td></tr>';
+      html += '</table>';
+    }
+    html += '</div></div>';
+
+    // 3. Bottleneck analysis
+    const cudaBins = bins.filter(b => b.cubins.length > 0);
+    html += '<div class="insight-section">';
+    if (cudaBins.length > 0 && DATA.effective_cc_min) {
+      const effMin = parseInt(DATA.effective_cc_min);
+      const bottlenecks = cudaBins.filter(b => {
+        const maxSm = Math.max(...b.cubins.map(smVal));
+        return maxSm <= effMin + 5;
+      }).sort((a, b) => Math.max(...a.cubins.map(smVal)) - Math.max(...b.cubins.map(smVal)));
+
+      if (bottlenecks.length > 0 && bottlenecks.length < cudaBins.length) {
+        html += '<h4><span class="badge badge-error">!</span> Range Bottlenecks (' + bottlenecks.length + ')</h4>';
+        html += '<div class="insight-section-body">';
+        html += '<div style="font-size:9px;color:var(--text-dim);margin-bottom:4px">These binaries have the narrowest SM coverage and constrain the effective range to sm_' + effMin + '.</div>';
+        html += '<table class="insight-table"><tr><th>Binary</th><th>Path</th><th>Max SM</th><th>Architectures</th></tr>';
+        for (const b of bottlenecks.slice(0, 20)) {
+          const filename = b.path.split('/').pop();
+          const maxSm = Math.max(...b.cubins.map(smVal));
+          html += '<tr><td>' + escHtml(filename) + '</td><td>' + escHtml(b.path) + '</td><td>sm_' + maxSm + '</td><td>' + smChicletHTML(b.cubins, b.ptx) + '</td></tr>';
+        }
+        html += '</table>';
+        html += '</div>';
+      } else {
+        html += '<h4><span class="badge badge-ok">\u2713</span> No Range Bottlenecks</h4>';
+        html += '<div class="insight-section-body">';
+        html += '<div style="font-size:10px;color:var(--text-dim)">All CUDA binaries have consistent architecture coverage.</div>';
+        html += '</div>';
+      }
+    } else {
+      html += '<h4><span class="badge badge-info">i</span> Range Bottlenecks</h4>';
+      html += '<div class="insight-section-body">';
+      html += '<div style="font-size:10px;color:var(--text-dim)">No effective range computed (no CUDA binaries or missing metadata).</div>';
+      html += '</div>';
+    }
+    html += '</div>';
+
+    // 4. Architecture coverage matrix
+    const smCounts = {};
+    for (const b of cudaBins) {
+      for (const c of b.cubins) {
+        const sm = smVal(c);
+        if (!smCounts[sm]) smCounts[sm] = { sass: 0, ptx: 0 };
+        smCounts[sm].sass++;
+      }
+      for (const p of b.ptx) {
+        const sm = smVal(p);
+        if (!smCounts[sm]) smCounts[sm] = { sass: 0, ptx: 0 };
+        smCounts[sm].ptx++;
+      }
+    }
+    const smEntries = Object.entries(smCounts).sort((a, b) => parseInt(a[0]) - parseInt(b[0]));
+    html += '<div class="insight-section">';
+    html += '<h4><span class="badge badge-info">i</span> Architecture Coverage</h4>';
+    html += '<div class="insight-section-body">';
+    if (smEntries.length > 0) {
+      html += '<div style="font-size:9px;color:var(--text-dim);margin-bottom:4px">How many of ' + cudaBins.length + ' CUDA binaries include each SM architecture.</div>';
+      html += '<table class="insight-table"><tr><th>SM</th><th>Generation</th><th>SASS</th><th>PTX</th><th>Coverage</th></tr>';
+      for (const [sm, counts] of smEntries) {
+        const smInt = parseInt(sm);
+        const total = cudaBins.length;
+        const coverPct = (counts.sass / total * 100).toFixed(0);
+        const barWidth = Math.max(coverPct * 1.2, 2);
+        html += '<tr>';
+        html += '<td><span class="sm-chip" style="background:' + smGenColor(smInt) + ';color:#fbf1c7">sm_' + sm + '</span></td>';
+        html += '<td>' + smGenName(smInt) + '</td>';
+        html += '<td>' + counts.sass + '</td>';
+        html += '<td>' + counts.ptx + '</td>';
+        html += '<td><div style="display:flex;align-items:center;gap:4px"><div style="width:' + barWidth + 'px;height:10px;background:' + smGenColor(smInt) + ';border-radius:2px"></div><span style="font-size:9px">' + coverPct + '%</span></div></td>';
+        html += '</tr>';
+      }
+      html += '</table>';
+    } else {
+      html += '<div style="font-size:10px;color:var(--text-dim)">No CUDA binaries found.</div>';
+    }
+    html += '</div></div>';
+
+    // 5. Largest binaries
+    const bySizeDesc = [...bins].filter(b => b.size > 0).sort((a, b) => b.size - a.size);
+    const totalSize = bySizeDesc.reduce((acc, b) => acc + b.size, 0);
+    html += '<div class="insight-section">';
+    html += '<h4><span class="badge badge-info">i</span> Largest Binaries</h4>';
+    html += '<div class="insight-section-body">';
+    html += '<div style="font-size:9px;color:var(--text-dim);margin-bottom:4px">Total scanned: ' + formatSize(totalSize) + ' across ' + bins.length + ' binaries</div>';
+    html += '<table class="insight-table"><tr><th>Binary</th><th>Path</th><th>Size</th><th>CUDA</th></tr>';
+    for (const b of bySizeDesc.slice(0, 25)) {
+      const filename = b.path.split('/').pop();
+      const cuda = (b.cubins.length || b.ptx.length) ? smChicletHTML(b.cubins, b.ptx) : '<span style="color:var(--text-dim)">-</span>';
+      const pct = totalSize > 0 ? ' (' + (b.size / totalSize * 100).toFixed(1) + '%)' : '';
+      html += '<tr><td>' + escHtml(filename) + '</td><td>' + escHtml(b.path) + '</td><td style="white-space:nowrap">' + formatSize(b.size) + pct + '</td><td>' + cuda + '</td></tr>';
+    }
+    html += '</table></div></div>';
+
+    // 6. Binary classification breakdown
+    const priorityCounts = {};
+    for (const b of bins) {
+      if (!priorityCounts[b.priority]) priorityCounts[b.priority] = { total: 0, cuda: 0, totalSize: 0 };
+      priorityCounts[b.priority].total++;
+      if (b.cubins.length || b.ptx.length) priorityCounts[b.priority].cuda++;
+      priorityCounts[b.priority].totalSize += b.size;
+    }
+    html += '<div class="insight-section">';
+    html += '<h4><span class="badge badge-info">i</span> Binary Classification</h4>';
+    html += '<div class="insight-section-body">';
+    html += '<table class="insight-table"><tr><th>Type</th><th>Total</th><th>With CUDA</th><th>Size</th></tr>';
+    for (const [prio, counts] of Object.entries(priorityCounts).sort((a, b) => b[1].total - a[1].total)) {
+      html += '<tr>';
+      html += '<td><span class="priority-badge ' + escHtml(prio) + '">' + escHtml(prio) + '</span></td>';
+      html += '<td>' + counts.total + '</td>';
+      html += '<td>' + counts.cuda + '</td>';
+      html += '<td>' + formatSize(counts.totalSize) + '</td>';
+      html += '</tr>';
+    }
+    html += '</table></div></div>';
+
+    // 7. RPATH Issues
+    const rpathBins = bins.filter(b => b.rpath && b.rpath.length > 0);
+    const runpathBins = bins.filter(b => b.runpath && b.runpath.length > 0);
+    html += '<div class="insight-section">';
+    html += '<h4><span class="badge ' + (rpathBins.length > 0 ? 'badge-warn' : 'badge-ok') + '">' + (rpathBins.length > 0 ? '!' : '\u2713') + '</span> RPATH Issues (' + rpathBins.length + ')</h4>';
+    html += '<div class="insight-section-body">';
+    if (rpathBins.length === 0) {
+      html += '<div style="font-size:10px;color:var(--text-dim)">No binaries use the deprecated DT_RPATH. All use DT_RUNPATH (or neither).</div>';
+    } else {
+      html += '<div style="font-size:9px;color:var(--text-dim);margin-bottom:4px">DT_RPATH is deprecated. The dynamic linker checks it before LD_LIBRARY_PATH, which can cause unexpected resolution. Migrate to DT_RUNPATH.</div>';
+      html += '<table class="insight-table"><tr><th>Binary</th><th>RPATH</th></tr>';
+      for (const b of rpathBins.slice(0, 30)) {
+        const filename = b.path.split('/').pop();
+        html += '<tr><td title="' + escHtml(b.path) + '">' + escHtml(filename) + '</td><td style="word-break:break-all;font-size:9px">' + b.rpath.map(escHtml).join(':') + '</td></tr>';
+      }
+      if (rpathBins.length > 30) html += '<tr><td colspan="2" style="color:var(--text-dim)">... and ' + (rpathBins.length - 30) + ' more</td></tr>';
+      html += '</table>';
+    }
+    if (runpathBins.length > 0) {
+      html += '<div style="margin-top:8px;font-size:10px;color:var(--text-dim)">' + runpathBins.length + ' binaries use DT_RUNPATH (correct modern behavior).</div>';
+    }
+    html += '</div></div>';
+
+    // 8. Unowned Binaries: CUDA binaries with no package field
+    const unownedCuda = bins.filter(b => (b.cubins.length > 0 || b.ptx.length > 0) && !b.package);
+    html += '<div class="insight-section">';
+    html += '<h4><span class="badge ' + (unownedCuda.length > 0 ? 'badge-warn' : 'badge-ok') + '">' + (unownedCuda.length > 0 ? '!' : '\u2713') + '</span> Unowned Binaries (' + unownedCuda.length + ')</h4>';
+    html += '<div class="insight-section-body">';
+    if (unownedCuda.length === 0) {
+      html += '<div style="font-size:10px;color:var(--text-dim)">All CUDA binaries are associated with a package.</div>';
+    } else {
+      html += '<div style="font-size:9px;color:var(--text-dim);margin-bottom:4px">CUDA binaries with no owning package. These may be manually placed or from an untracked install.</div>';
+      html += '<table class="insight-table"><tr><th>Binary</th><th>Path</th><th>Architectures</th></tr>';
+      for (const b of unownedCuda.sort((a, b) => a.path.localeCompare(b.path)).slice(0, 40)) {
+        const filename = b.path.split('/').pop();
+        html += '<tr><td>' + escHtml(filename) + '</td><td>' + escHtml(b.path) + '</td><td>' + smChicletHTML(b.cubins, b.ptx) + '</td></tr>';
+      }
+      if (unownedCuda.length > 40) html += '<tr><td colspan="3" style="color:var(--text-dim)">... and ' + (unownedCuda.length - 40) + ' more</td></tr>';
+      html += '</table>';
+    }
+    html += '</div></div>';
+
+    html += '</div>'; // close insights-grid
+    page.innerHTML = html;
+
+    // Wire up collapsible sections
+    page.querySelectorAll('.insight-section h4').forEach(h4 => {
+      h4.addEventListener('click', () => {
+        h4.parentElement.classList.toggle('collapsed');
+      });
+    });
+
+  }
+
+  // ---- environment full page ----
+
+  function renderEnvironment() {
+    const page = document.getElementById('environment-page');
+    const env = DATA.environment;
+
+    let html = '<h2>' + escHtml(DATA.image) + '</h2>';
+    html += '<div class="subtitle">Container environment details</div>';
+    html += '<div class="insights-grid">';
+
+    // OS info
+    html += '<div class="insight-section">';
+    html += '<h4><span class="badge badge-info">i</span> Operating System</h4>';
+    html += '<div class="insight-section-body">';
+    if (env && env.os) {
+      const osLabel = env.os.pretty_name || (env.os.id + ' ' + env.os.version_id);
+      html += '<div style="margin-bottom:4px"><strong>' + escHtml(osLabel) + '</strong></div>';
+      html += '<div style="font-size:10px;color:var(--text-dim)">ID: ' + escHtml(env.os.id) + ', Version: ' + escHtml(env.os.version_id) + '</div>';
+    } else {
+      html += '<div style="font-size:10px;color:var(--text-dim)">No os-release found.</div>';
+    }
+    html += '</div></div>';
+
+    // ld.so.conf paths
+    html += '<div class="insight-section">';
+    html += '<h4><span class="badge badge-info">i</span> ld.so.conf Search Paths</h4>';
+    html += '<div class="insight-section-body">';
+    if (env && env.ld_conf_paths && env.ld_conf_paths.length) {
+      html += '<div style="font-size:10px;color:var(--text-dim);margin-bottom:4px">Directories the dynamic linker searches for shared libraries.</div>';
+      html += '<table class="insight-table"><tr><th>Path</th></tr>';
+      for (const p of env.ld_conf_paths) {
+        html += '<tr><td>' + escHtml(p) + '</td></tr>';
+      }
+      html += '</table>';
+    } else {
+      html += '<div style="font-size:10px;color:var(--text-dim)">No ld.so.conf paths found.</div>';
+    }
+    html += '</div></div>';
+
+    // Python environments (grouped by virtualenv / system)
+    const pyEnvs = (env && env.python_environments) ? env.python_environments : [];
+    const totalPyPkgs = pyEnvs.reduce((sum, e) => sum + (e.packages || []).length, 0);
+    html += '<div class="insight-section">';
+    html += '<h4><span class="badge badge-info">i</span> Python Packages (' + totalPyPkgs + ')</h4>';
+    html += '<div class="insight-section-body">';
+    if (pyEnvs.length > 0) {
+      html += '<input type="text" class="search-box" id="env-py-search" placeholder="Filter packages..." style="margin-bottom:4px">';
+      html += '<div style="max-height:500px;overflow-y:auto">';
+      for (const pyEnv of pyEnvs) {
+        const pkgs = [...(pyEnv.packages || [])].sort((a, b) => a.name.localeCompare(b.name));
+        const envLabel = escHtml(pyEnv.label || pyEnv.site_packages_dir);
+        const dirLabel = escHtml(pyEnv.site_packages_dir);
+        html += '<div style="margin-bottom:12px">';
+        html += '<div style="font-size:11px;font-weight:600;color:var(--cyan);margin-bottom:4px;border-bottom:1px solid var(--border);padding-bottom:2px">';
+        html += envLabel + ' <span style="font-weight:400;color:var(--text-dim);font-size:9px">(' + dirLabel + ', ' + pkgs.length + ' packages)</span>';
+        html += '</div>';
+        html += '<table class="env-pkg-table env-py-table"><thead><tr><th>Package</th><th>Version</th></tr></thead><tbody>';
+        for (const p of pkgs) {
+          html += '<tr><td>' + escHtml(p.name) + '</td><td>' + escHtml(p.version) + '</td></tr>';
+        }
+        html += '</tbody></table>';
+        html += '</div>';
+      }
+      html += '</div>';
+    } else {
+      html += '<div style="font-size:10px;color:var(--text-dim)">No Python packages detected.</div>';
+    }
+    html += '</div></div>';
+
+    // System packages
+    html += '<div class="insight-section">';
+    const sysPkgCount = (env && env.system_packages) ? env.system_packages.length : 0;
+    html += '<h4><span class="badge badge-info">i</span> System Packages (' + sysPkgCount + ')</h4>';
+    html += '<div class="insight-section-body">';
+    if (sysPkgCount > 0) {
+      // Sort by source (packages with a source first), then alphabetical
+      const sorted = [...env.system_packages].sort((a, b) => {
+        const aSrc = a.source || '';
+        const bSrc = b.source || '';
+        // Packages with a source sort before those without
+        const aHas = aSrc ? 0 : 1;
+        const bHas = bSrc ? 0 : 1;
+        return (aHas - bHas) || aSrc.localeCompare(bSrc) || a.name.localeCompare(b.name);
+      });
+
+      html += '<input type="text" class="search-box" id="env-sys-search" placeholder="Filter packages..." style="margin-bottom:4px">';
+      html += '<div style="max-height:400px;overflow-y:auto">';
+      html += '<table class="env-pkg-table" id="env-sys-table"><thead><tr><th>Package</th><th>Version</th><th>Source</th></tr></thead><tbody>';
+      for (const p of sorted) {
+        html += '<tr><td>' + escHtml(p.name) + '</td><td>' + escHtml(p.version) + '</td><td>' + escHtml(p.source || '') + '</td></tr>';
+      }
+      html += '</tbody></table></div>';
+    } else {
+      html += '<div style="font-size:10px;color:var(--text-dim)">No system packages detected (dpkg or RPM).</div>';
+    }
+    html += '</div></div>';
+
+    // Library symlinks
+    html += '<div class="insight-section">';
+    const allSymlinks = (env && env.symlinks) ? Object.entries(env.symlinks) : [];
+    const cudaSymlinks = allSymlinks.filter(([k]) => {
+      const name = k.split('/').pop().toLowerCase();
+      return name.includes('cuda') || name.includes('cudnn') || name.includes('nccl') || name.includes('cublas') || name.includes('nvrtc');
+    }).sort((a, b) => a[0].localeCompare(b[0]));
+    html += '<h4><span class="badge badge-info">i</span> CUDA Library Symlinks (' + cudaSymlinks.length + ')</h4>';
+    html += '<div class="insight-section-body">';
+    if (cudaSymlinks.length > 0) {
+      html += '<input type="text" class="search-box" id="env-sym-search" placeholder="Filter symlinks..." style="margin-bottom:4px">';
+      html += '<div style="max-height:400px;overflow-y:auto" id="env-sym-list">';
+      for (const [src, target] of cudaSymlinks) {
+        html += '<div class="symlink-chain">' + escHtml(src) + '<span class="arrow">\u2192</span>' + escHtml(target) + '</div>';
+      }
+      html += '</div>';
+    } else {
+      html += '<div style="font-size:10px;color:var(--text-dim)">No CUDA-related symlinks found.</div>';
+    }
+    html += '</div></div>';
+
+    // OCI Labels
+    const labels = DATA.labels || {};
+    const labelEntries = Object.entries(labels).sort((a, b) => a[0].localeCompare(b[0]));
+    html += '<div class="insight-section">';
+    html += '<h4><span class="badge badge-info">i</span> OCI Labels (' + labelEntries.length + ')</h4>';
+    html += '<div class="insight-section-body">';
+    if (labelEntries.length > 0) {
+      html += '<table class="env-pkg-table"><thead><tr><th>Key</th><th>Value</th></tr></thead><tbody>';
+      for (const [k, v] of labelEntries) {
+        html += '<tr><td>' + escHtml(k) + '</td><td style="word-break:break-all">' + escHtml(v) + '</td></tr>';
+      }
+      html += '</tbody></table>';
+    } else {
+      html += '<div style="font-size:10px;color:var(--text-dim)">No OCI labels found.</div>';
+    }
+    html += '</div></div>';
+
+    // Environment Variables
+    const envVars = DATA.env_vars || [];
+    html += '<div class="insight-section">';
+    html += '<h4><span class="badge badge-info">i</span> Environment Variables (' + envVars.length + ')</h4>';
+    html += '<div class="insight-section-body">';
+    if (envVars.length > 0) {
+      html += '<input type="text" class="search-box" id="env-vars-search" placeholder="Filter environment variables..." style="margin-bottom:4px">';
+      html += '<div style="max-height:500px;overflow-y:auto">';
+      html += '<table class="env-pkg-table" id="env-vars-table"><thead><tr><th>Key</th><th>Value</th></tr></thead><tbody>';
+      const cudaKeyRe = /CUDA|NVIDIA|NVSHMEM|TORCH/i;
+      for (const [k, v] of envVars) {
+        const highlight = cudaKeyRe.test(k);
+        const style = highlight ? ' style="background:rgba(203,166,247,0.12)"' : '';
+        html += '<tr' + style + '><td>' + escHtml(k) + '</td><td style="word-break:break-all">' + escHtml(v) + '</td></tr>';
+      }
+      html += '</tbody></table></div>';
+    } else {
+      html += '<div style="font-size:10px;color:var(--text-dim)">No environment variables found.</div>';
+    }
+    html += '</div></div>';
+
+    html += '</div>'; // close insights-grid
+    page.innerHTML = html;
+
+    // Wire up collapsible sections
+    page.querySelectorAll('.insight-section h4').forEach(h4 => {
+      h4.addEventListener('click', () => {
+        h4.parentElement.classList.toggle('collapsed');
+      });
+    });
+
+    // Wire up search filters
+    const pySearch = document.getElementById('env-py-search');
+    if (pySearch) {
+      pySearch.addEventListener('input', () => {
+        const q = pySearch.value.toLowerCase();
+        document.querySelectorAll('.env-py-table tbody tr').forEach(row => {
+          const name = row.cells[0].textContent.toLowerCase();
+          row.style.display = name.includes(q) ? '' : 'none';
+        });
+      });
+    }
+
+    const sysSearch = document.getElementById('env-sys-search');
+    if (sysSearch) {
+      sysSearch.addEventListener('input', () => {
+        const q = sysSearch.value.toLowerCase();
+        document.querySelectorAll('#env-sys-table tbody tr').forEach(row => {
+          const name = row.cells[0].textContent.toLowerCase();
+          row.style.display = name.includes(q) ? '' : 'none';
+        });
+      });
+    }
+
+    const symSearch = document.getElementById('env-sym-search');
+    if (symSearch) {
+      symSearch.addEventListener('input', () => {
+        const q = symSearch.value.toLowerCase();
+        document.querySelectorAll('#env-sym-list .symlink-chain').forEach(el => {
+          el.style.display = el.textContent.toLowerCase().includes(q) ? '' : 'none';
+        });
+      });
+    }
+
+    const envVarsSearch = document.getElementById('env-vars-search');
+    if (envVarsSearch) {
+      envVarsSearch.addEventListener('input', () => {
+        const q = envVarsSearch.value.toLowerCase();
+        document.querySelectorAll('#env-vars-table tbody tr').forEach(row => {
+          const key = row.cells[0].textContent.toLowerCase();
+          const val = row.cells[1].textContent.toLowerCase();
+          row.style.display = (key.includes(q) || val.includes(q)) ? '' : 'none';
+        });
+      });
+    }
+  }
+
+  // ---- init ----
+
+  renderHeader();
+  renderProfiles();
+  renderList();
+  renderInsights();
+  renderEnvironment();
+})();
+</script>
+</body>
+</html>

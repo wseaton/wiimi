@@ -1,0 +1,9 @@
+title = "wiimi GPU Image Catalog (local preview)"
+output_dir = "_site"
+
+[[family]]
+name = "llm-d CUDA"
+registry = "ghcr.io"
+repository = "llm-d/llm-d-cuda"
+tag_pattern = '^v\d+\.\d+\.\d+(-rc\.\d+)?$'
+last_n = 3

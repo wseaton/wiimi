@@ -1,0 +1,545 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>wiimi diff</title>
+<style>
+/*BASE_STYLES*/
+
+:root {
+  --green-bg: #e6ecc7;
+  --red-bg: #f2d5cd;
+  --yellow-bg: #f5e6c8;
+}
+
+/* -- header -- */
+.diff-header {
+  padding: 16px 24px;
+  background: var(--bg-surface);
+  border-bottom: 1px solid var(--border);
+}
+.diff-header h1 {
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--text-bright);
+  margin-bottom: 8px;
+}
+.diff-images {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+}
+.diff-images .arrow { color: var(--text-dim); font-size: 16px; }
+.diff-images .image-ref {
+  font-size: 12px;
+  padding: 2px 8px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  max-width: 500px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.summary-badges {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 600;
+}
+.badge-added { background: var(--green-bg); color: var(--green); }
+.badge-removed { background: var(--red-bg); color: var(--red); }
+.badge-changed { background: var(--yellow-bg); color: var(--yellow); }
+
+/* -- tab panels -- */
+.tab-panel {
+  display: none;
+  padding: 16px 24px;
+  overflow-y: auto;
+  height: calc(100vh - 32px - 120px);
+}
+.tab-panel.active { display: block; }
+
+/* -- search -- */
+.search-bar {
+  margin-bottom: 12px;
+}
+.search-bar input {
+  width: 100%;
+  max-width: 400px;
+  padding: 6px 10px;
+  font-family: inherit;
+  font-size: 12px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text);
+  outline: none;
+}
+.search-bar input:focus { border-color: var(--accent); }
+
+/* -- filter buttons -- */
+.filter-bar {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 12px;
+}
+.filter-btn {
+  padding: 3px 10px;
+  font-family: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg);
+  color: var(--text-dim);
+  cursor: pointer;
+}
+.filter-btn:hover { background: var(--bg-hover); }
+.filter-btn.active { background: var(--bg-hover); color: var(--text-bright); border-color: var(--accent); }
+
+/* -- tables -- */
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+  table-layout: fixed;
+}
+th {
+  text-align: left;
+  padding: 6px 10px;
+  background: var(--bg-surface);
+  border-bottom: 2px solid var(--border);
+  color: var(--text-dim);
+  font-weight: 600;
+  position: sticky;
+  top: 0;
+  z-index: 1;
+}
+td {
+  padding: 5px 10px;
+  border-bottom: 1px solid var(--border);
+  vertical-align: top;
+  word-break: break-all;
+  overflow-wrap: anywhere;
+}
+tr.row-added { background: var(--green-bg); }
+tr.row-removed { background: var(--red-bg); }
+tr.row-changed { background: var(--yellow-bg); }
+tr:hover { filter: brightness(0.97); }
+
+/* -- SM chiclets -- */
+.sm-chiclets {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px;
+}
+.sm-chiclet {
+  display: inline-block;
+  padding: 1px 6px;
+  border-radius: 3px;
+  font-size: 11px;
+  font-weight: 600;
+  background: var(--bg-surface);
+  color: var(--text-dim);
+  border: 1px solid var(--border);
+}
+.sm-chiclet.cubin { color: var(--blue); border-color: var(--blue); }
+.sm-chiclet.ptx { color: var(--accent); border-color: var(--accent); font-style: italic; }
+.sm-chiclet.added { color: var(--green); border-color: var(--green); background: var(--green-bg); }
+.sm-chiclet.removed { color: var(--red); border-color: var(--red); background: var(--red-bg); text-decoration: line-through; }
+
+/* -- env label -- */
+.env-label {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--accent);
+  margin: 16px 0 8px;
+  padding-bottom: 4px;
+  border-bottom: 1px solid var(--border);
+}
+.env-label:first-child { margin-top: 0; }
+
+/* -- empty state -- */
+.empty-state {
+  padding: 40px 0;
+  text-align: center;
+  color: var(--text-dim);
+  font-size: 14px;
+}
+</style>
+</head>
+<body>
+
+<div class="masthead">
+  <div class="masthead-tab active" data-tab="sm">CUDA</div>
+  <div class="masthead-tab" data-tab="python">Python Packages</div>
+  <div class="masthead-tab" data-tab="system">System Packages</div>
+  <div class="masthead-tab" data-tab="labels">OCI Labels</div>
+  <div class="masthead-tab" data-tab="env">Env Vars</div>
+</div>
+
+<div class="diff-header">
+  <h1>wiimi diff</h1>
+  <div class="diff-images">
+    <span class="image-ref" id="from-image"></span>
+    <span class="arrow">&rarr;</span>
+    <span class="image-ref" id="to-image"></span>
+  </div>
+  <div class="summary-badges" id="summary-badges"></div>
+</div>
+
+<!-- SM Changes tab -->
+<div class="tab-panel active" id="panel-sm">
+  <div class="search-bar"><input type="text" id="search-sm" placeholder="Filter binaries by path..."></div>
+  <div class="filter-bar">
+    <button class="filter-btn active" data-filter="all">All</button>
+    <button class="filter-btn" data-filter="added">Added</button>
+    <button class="filter-btn" data-filter="removed">Removed</button>
+    <button class="filter-btn" data-filter="changed">Changed</button>
+    <button class="filter-btn" data-filter="renamed" id="renamed-toggle">Renamed</button>
+  </div>
+  <div id="sm-content"></div>
+</div>
+
+<!-- Python Packages tab -->
+<div class="tab-panel" id="panel-python">
+  <div class="search-bar"><input type="text" id="search-python" placeholder="Filter packages..."></div>
+  <div id="python-content"></div>
+</div>
+
+<!-- System Packages tab -->
+<div class="tab-panel" id="panel-system">
+  <div class="search-bar"><input type="text" id="search-system" placeholder="Filter packages..."></div>
+  <div id="system-content"></div>
+</div>
+
+<!-- OCI Labels tab -->
+<div class="tab-panel" id="panel-labels">
+  <div class="search-bar"><input type="text" id="search-labels" placeholder="Filter labels..."></div>
+  <div id="labels-content"></div>
+</div>
+
+<!-- Env Vars tab -->
+<div class="tab-panel" id="panel-env">
+  <div class="search-bar"><input type="text" id="search-env" placeholder="Filter env vars..."></div>
+  <div id="env-content"></div>
+</div>
+
+<script>
+const DATA = /*DIFF_DATA*/null;
+
+function escHtml(s) {
+  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+function ccKey(cc) { return cc.major * 10 + cc.minor; }
+
+function smChicletHTML(sm, type, diffClass) {
+  var cls = 'sm-chiclet ' + type + (diffClass ? ' ' + diffClass : '');
+  var prefix = diffClass === 'added' ? '+' : diffClass === 'removed' ? '-' : '';
+  var label = type === 'ptx' ? 'ptx' + sm : 'sm_' + sm;
+  return '<span class="' + cls + '">' + prefix + label + '</span>';
+}
+
+// Render a git-diff style single column: unchanged SMs neutral, added green with +, removed red with -
+function smDiffHTML(before, after, type) {
+  var beforeSet = {};
+  var afterSet = {};
+  (before || []).forEach(function(cc) { beforeSet[ccKey(cc)] = true; });
+  (after || []).forEach(function(cc) { afterSet[ccKey(cc)] = true; });
+
+  // Collect all SM values, sorted
+  var allSms = {};
+  Object.keys(beforeSet).forEach(function(k) { allSms[k] = true; });
+  Object.keys(afterSet).forEach(function(k) { allSms[k] = true; });
+  var sorted = Object.keys(allSms).map(Number).sort(function(a, b) { return a - b; });
+
+  if (sorted.length === 0) return '';
+
+  var parts = sorted.map(function(sm) {
+    var inBefore = beforeSet[sm];
+    var inAfter = afterSet[sm];
+    if (inBefore && inAfter) return smChicletHTML(sm, type, '');
+    if (inAfter) return smChicletHTML(sm, type, 'added');
+    return smChicletHTML(sm, type, 'removed');
+  });
+  return '<div class="sm-chiclets">' + parts.join('') + '</div>';
+}
+
+function statusClass(status) {
+  if (status === 'added') return 'row-added';
+  if (status === 'removed') return 'row-removed';
+  if (status === 'changed') return 'row-changed';
+  return '';
+}
+
+function pkgStatusClass(change) {
+  return statusClass(change.status);
+}
+
+function pkgVersionCell(change) {
+  if (change.status === 'added') return '<td>-</td><td>' + escHtml(change.value) + '</td>';
+  if (change.status === 'removed') return '<td>' + escHtml(change.value) + '</td><td>-</td>';
+  if (change.status === 'changed') return '<td>' + escHtml(change.before) + '</td><td>' + escHtml(change.after) + '</td>';
+  return '<td>-</td><td>-</td>';
+}
+
+// -- Render summary badges --
+// Per-tab counts so the badges reflect what the user is actually looking at.
+var TAB_COUNTS = {
+  sm: {
+    added: DATA.summary.binaries_added,
+    removed: DATA.summary.binaries_removed,
+    changed: DATA.summary.binaries_changed,
+    renamed: DATA.summary.binaries_renamed
+  },
+  python: {
+    added: DATA.summary.python_packages_added,
+    removed: DATA.summary.python_packages_removed,
+    changed: DATA.summary.python_packages_changed,
+    renamed: 0
+  },
+  system: {
+    added: DATA.summary.system_packages_added,
+    removed: DATA.summary.system_packages_removed,
+    changed: DATA.summary.system_packages_changed,
+    renamed: 0
+  },
+  labels: {
+    added: DATA.summary.labels_added,
+    removed: DATA.summary.labels_removed,
+    changed: DATA.summary.labels_changed,
+    renamed: 0
+  },
+  env: {
+    added: DATA.summary.env_vars_added,
+    removed: DATA.summary.env_vars_removed,
+    changed: DATA.summary.env_vars_changed,
+    renamed: 0
+  }
+};
+
+function renderBadges(tab) {
+  var c = TAB_COUNTS[tab];
+  var el = document.getElementById('summary-badges');
+  var parts = [];
+  if (c.added > 0) parts.push('<span class="badge badge-added">+' + c.added + ' added</span>');
+  if (c.removed > 0) parts.push('<span class="badge badge-removed">-' + c.removed + ' removed</span>');
+  if (c.changed > 0) parts.push('<span class="badge badge-changed">~' + c.changed + ' changed</span>');
+  if (c.renamed > 0) parts.push('<span class="badge" style="background:var(--bg-surface);color:var(--text-dim)">' + c.renamed + ' renamed (hidden)</span>');
+  if (parts.length === 0) parts.push('<span class="badge" style="color:var(--text-dim)">No changes</span>');
+  el.innerHTML = parts.join('');
+}
+
+(function() {
+  document.getElementById('from-image').textContent = DATA.from;
+  document.getElementById('to-image').textContent = DATA.to;
+  renderBadges('sm');
+})();
+
+// -- SM Changes --
+(function() {
+  var container = document.getElementById('sm-content');
+  var diffs = DATA.binary_diffs;
+
+  if (diffs.length === 0) {
+    container.innerHTML = '<div class="empty-state">No SM architecture changes detected.</div>';
+    return;
+  }
+
+  var hasPackage = diffs.some(function(d) { return d.package; });
+  var html = '<table id="sm-table"><thead><tr><th style="width:' + (hasPackage ? '45%' : '55%') + '">Path</th>' + (hasPackage ? '<th>Package</th>' : '') + '<th>SM Architectures</th></tr></thead><tbody>';
+  for (var i = 0; i < diffs.length; i++) {
+    var d = diffs[i];
+    var renamed = d.renamed ? 'true' : 'false';
+    html += '<tr class="' + statusClass(d.status) + '" data-status="' + d.status + '" data-renamed="' + renamed + '" data-path="' + escHtml(d.path.toLowerCase()) + '"' + (d.renamed ? ' style="display:none"' : '') + '>';
+    html += '<td>' + escHtml(d.path) + '</td>';
+    if (hasPackage) html += '<td>' + (d.package ? escHtml(d.package) : '') + '</td>';
+    var cubinDiff = smDiffHTML(d.cubins_before, d.cubins_after, 'cubin');
+    var ptxDiff = smDiffHTML(d.ptx_before, d.ptx_after, 'ptx');
+    html += '<td>' + cubinDiff + (cubinDiff && ptxDiff ? ' ' : '') + ptxDiff + '</td>';
+    html += '</tr>';
+  }
+  html += '</tbody></table>';
+  container.innerHTML = html;
+
+  // Filter buttons
+  var filterBtns = document.querySelectorAll('#panel-sm .filter-btn');
+  filterBtns.forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      filterBtns.forEach(function(b) { b.classList.remove('active'); });
+      btn.classList.add('active');
+      filterSm();
+    });
+  });
+
+  // Search
+  document.getElementById('search-sm').addEventListener('input', filterSm);
+
+  function filterSm() {
+    var activeFilter = document.querySelector('#panel-sm .filter-btn.active').dataset.filter;
+    var query = document.getElementById('search-sm').value.toLowerCase();
+    var showRenamed = activeFilter === 'renamed';
+    var rows = document.querySelectorAll('#sm-table tbody tr');
+    rows.forEach(function(row) {
+      var isRenamed = row.dataset.renamed === 'true';
+      var matchFilter;
+      if (showRenamed) {
+        matchFilter = isRenamed;
+      } else if (activeFilter === 'all') {
+        matchFilter = !isRenamed;
+      } else {
+        matchFilter = row.dataset.status === activeFilter && !isRenamed;
+      }
+      var matchSearch = !query || row.dataset.path.indexOf(query) !== -1;
+      row.style.display = (matchFilter && matchSearch) ? '' : 'none';
+    });
+  }
+})();
+
+// -- Python Packages --
+(function() {
+  var container = document.getElementById('python-content');
+  var envDiffs = DATA.python_diffs;
+
+  if (envDiffs.length === 0) {
+    container.innerHTML = '<div class="empty-state">No Python package changes detected.</div>';
+    return;
+  }
+
+  var html = '';
+  for (var e = 0; e < envDiffs.length; e++) {
+    var env = envDiffs[e];
+    html += '<div class="env-label">' + escHtml(env.label) + '</div>';
+    html += '<table class="python-table"><thead><tr><th>Package</th><th>Before</th><th>After</th></tr></thead><tbody>';
+    for (var p = 0; p < env.packages.length; p++) {
+      var pkg = env.packages[p];
+      html += '<tr class="' + pkgStatusClass(pkg.change) + '" data-name="' + escHtml(pkg.name.toLowerCase()) + '">';
+      html += '<td>' + escHtml(pkg.name) + '</td>';
+      html += pkgVersionCell(pkg.change);
+      html += '</tr>';
+    }
+    html += '</tbody></table>';
+  }
+  container.innerHTML = html;
+
+  document.getElementById('search-python').addEventListener('input', function() {
+    var query = this.value.toLowerCase();
+    document.querySelectorAll('.python-table tbody tr').forEach(function(row) {
+      row.style.display = (!query || row.dataset.name.indexOf(query) !== -1) ? '' : 'none';
+    });
+  });
+})();
+
+// -- System Packages --
+(function() {
+  var container = document.getElementById('system-content');
+  var diffs = DATA.system_package_diffs;
+
+  if (diffs.length === 0) {
+    container.innerHTML = '<div class="empty-state">No system package changes detected.</div>';
+    return;
+  }
+
+  var html = '<table id="system-table"><thead><tr><th>Package</th><th>Before</th><th>After</th></tr></thead><tbody>';
+  for (var i = 0; i < diffs.length; i++) {
+    var pkg = diffs[i];
+    html += '<tr class="' + pkgStatusClass(pkg.change) + '" data-name="' + escHtml(pkg.name.toLowerCase()) + '">';
+    html += '<td>' + escHtml(pkg.name) + '</td>';
+    html += pkgVersionCell(pkg.change);
+    html += '</tr>';
+  }
+  html += '</tbody></table>';
+  container.innerHTML = html;
+
+  document.getElementById('search-system').addEventListener('input', function() {
+    var query = this.value.toLowerCase();
+    document.querySelectorAll('#system-table tbody tr').forEach(function(row) {
+      row.style.display = (!query || row.dataset.name.indexOf(query) !== -1) ? '' : 'none';
+    });
+  });
+})();
+
+// -- OCI Labels --
+(function() {
+  var container = document.getElementById('labels-content');
+  var diffs = DATA.label_diffs;
+
+  if (diffs.length === 0) {
+    container.innerHTML = '<div class="empty-state">No OCI label changes detected.</div>';
+    return;
+  }
+
+  var html = '<table id="labels-table"><thead><tr><th>Key</th><th>Before</th><th>After</th></tr></thead><tbody>';
+  for (var i = 0; i < diffs.length; i++) {
+    var d = diffs[i];
+    html += '<tr class="' + pkgStatusClass(d.change) + '" data-name="' + escHtml(d.key.toLowerCase()) + '">';
+    html += '<td>' + escHtml(d.key) + '</td>';
+    html += pkgVersionCell(d.change);
+    html += '</tr>';
+  }
+  html += '</tbody></table>';
+  container.innerHTML = html;
+
+  document.getElementById('search-labels').addEventListener('input', function() {
+    var query = this.value.toLowerCase();
+    document.querySelectorAll('#labels-table tbody tr').forEach(function(row) {
+      row.style.display = (!query || row.dataset.name.indexOf(query) !== -1) ? '' : 'none';
+    });
+  });
+})();
+
+// -- Env Vars --
+(function() {
+  var container = document.getElementById('env-content');
+  var diffs = DATA.env_var_diffs;
+
+  if (diffs.length === 0) {
+    container.innerHTML = '<div class="empty-state">No environment variable changes detected.</div>';
+    return;
+  }
+
+  var html = '<table id="env-table"><thead><tr><th>Key</th><th>Before</th><th>After</th></tr></thead><tbody>';
+  for (var i = 0; i < diffs.length; i++) {
+    var d = diffs[i];
+    html += '<tr class="' + pkgStatusClass(d.change) + '" data-name="' + escHtml(d.key.toLowerCase()) + '">';
+    html += '<td>' + escHtml(d.key) + '</td>';
+    html += pkgVersionCell(d.change);
+    html += '</tr>';
+  }
+  html += '</tbody></table>';
+  container.innerHTML = html;
+
+  document.getElementById('search-env').addEventListener('input', function() {
+    var query = this.value.toLowerCase();
+    document.querySelectorAll('#env-table tbody tr').forEach(function(row) {
+      row.style.display = (!query || row.dataset.name.indexOf(query) !== -1) ? '' : 'none';
+    });
+  });
+})();
+
+// -- Tab switching --
+document.querySelectorAll('.masthead-tab').forEach(function(tab) {
+  tab.addEventListener('click', function() {
+    document.querySelectorAll('.masthead-tab').forEach(function(t) { t.classList.remove('active'); });
+    document.querySelectorAll('.tab-panel').forEach(function(p) { p.classList.remove('active'); });
+    tab.classList.add('active');
+    document.getElementById('panel-' + tab.dataset.tab).classList.add('active');
+    renderBadges(tab.dataset.tab);
+  });
+});
+</script>
+</body>
+</html>

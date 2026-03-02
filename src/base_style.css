@@ -1,0 +1,48 @@
+:root {
+  --bg: #fbf1c7;
+  --bg-surface: #ebdbb2;
+  --bg-hover: #d5c4a1;
+  --text: #3c3836;
+  --text-dim: #7c6f64;
+  --text-bright: #282828;
+  --green: #79740e;
+  --blue: #076678;
+  --red: #9d0006;
+  --yellow: #b57614;
+  --border: #bdae93;
+  --accent: #8f3f71;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', monospace;
+  font-size: 13px;
+  background: var(--bg);
+  color: var(--text);
+  line-height: 1.5;
+}
+
+/* -- masthead -- */
+.masthead {
+  display: flex;
+  align-items: stretch;
+  height: 32px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-surface);
+  flex-shrink: 0;
+}
+.masthead-tab {
+  padding: 0 16px;
+  display: flex;
+  align-items: center;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-dim);
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+  user-select: none;
+}
+.masthead-tab:hover { color: var(--text); }
+.masthead-tab.active {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+}
