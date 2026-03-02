@@ -20,7 +20,7 @@ site-local: build
 
 # Deploy _site/ to Cloudflare Pages (requires `wrangler` and CF auth)
 deploy:
-    wrangler pages deploy _site --project-name=wiimi
+    wrangler pages deploy _site --project-name=wiimi --branch=main
 
 # Build the full site and deploy to Cloudflare Pages
 deploy-full: build discover site deploy
