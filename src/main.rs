@@ -90,6 +90,10 @@ enum Command {
         /// Registry hostnames to access over HTTP instead of HTTPS
         #[arg(long)]
         insecure_registry: Vec<String>,
+
+        /// Disable blob and parse caches (stream-only, saves disk on CI runners)
+        #[arg(long)]
+        no_cache: bool,
     },
 
     /// Generate a static site from stored scan results
@@ -220,6 +224,7 @@ async fn main() -> Result<()> {
             force,
             docker_config,
             insecure_registry,
+            no_cache,
         } => {
             let site_config = site::SiteConfig::load(std::path::Path::new(&config))?;
             let store = open_store(db.as_deref())?;
@@ -234,6 +239,7 @@ async fn main() -> Result<()> {
                     client.clone(),
                     dockerconfig_bytes.as_deref(),
                     force,
+                    no_cache,
                 )
                 .await?;
                 println!(

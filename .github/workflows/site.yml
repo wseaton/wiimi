@@ -48,7 +48,7 @@ jobs:
 
       - name: Discover and scan new images
         run: |
-          ARGS="--config wiimi-site.toml --db scans.db"
+          ARGS="--config wiimi-site.toml --db scans.db --no-cache"
           if [ "${{ inputs.force_rescan }}" = "true" ]; then
             ARGS="$ARGS --force"
           fi

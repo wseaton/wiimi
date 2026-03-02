@@ -54,6 +54,7 @@ pub async fn discover_family(
     client: Arc<Client>,
     dockerconfig: Option<&[u8]>,
     force: bool,
+    no_cache: bool,
 ) -> Result<DiscoverySummary> {
     // Build a reference for tag listing (tag is ignored, just need registry/repo)
     let ref_str = format!("{}/{}:latest", family.registry, family.repository);
@@ -98,13 +99,15 @@ pub async fn discover_family(
         }
 
         println!("  [{}/{}] Scanning: {image}", idx + 1, matched);
+        let use_blob_cache = !no_cache;
+        let use_parse_cache = !no_cache;
         let result = scan::scan_image(
             &image,
             dockerconfig,
-            vec![], // insecure registries not needed for ghcr.io etc.
+            vec![],
             true,
-            true,
-            true,
+            use_blob_cache,
+            use_parse_cache,
         )
         .await?;
         store.upsert(&result)?;
