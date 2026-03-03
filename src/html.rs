@@ -3,8 +3,7 @@ use std::collections::HashMap;
 use crate::diff::OgContext;
 use crate::scan::ScanResult;
 use crate::style::{self, BundleMode};
-
-const TEMPLATE: &str = include_str!("templates/html_template.html");
+use crate::templates;
 
 /// Compact binary entry for the HTML template (no DT_NEEDED, that's in the graph).
 #[derive(serde::Serialize)]
@@ -131,13 +130,11 @@ pub fn render_html_with_og(
 
     let json = serde_json::to_string(&data).unwrap_or_else(|e| format!("{{\"error\": \"{e}\"}}"));
 
-    let mut env = minijinja::Environment::new();
-    env.set_auto_escape_callback(|_| minijinja::AutoEscape::Html);
-    env.add_template("html", TEMPLATE)
-        .expect("HTML template is valid");
-    let tmpl = env.get_template("html").expect("html template registered");
+    let tmpl = templates::HTML_ENV
+        .get_template("html")
+        .expect("html template registered");
     tmpl.render(minijinja::context! {
-        base_css => style::BASE_CSS,
+        base_css => templates::BASE_CSS,
         scripts => style::script_block(bundle),
         graph_data => json,
         favicon_href => if favicon_href.is_empty() { "" } else { favicon_href },

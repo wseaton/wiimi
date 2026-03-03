@@ -3,9 +3,7 @@ use std::collections::HashMap;
 use crate::nvidia::ComputeCapability;
 
 use crate::scan::{BinaryScanResult, PackageVersion, PythonEnvironment, ScanResult};
-use crate::style;
-
-const DIFF_TEMPLATE: &str = include_str!("templates/diff_template.html");
+use crate::templates;
 
 // ---------------------------------------------------------------------------
 // Data model
@@ -535,13 +533,11 @@ pub fn render_diff_html_with_og(
     nav_html: &str,
 ) -> String {
     let json = serde_json::to_string(diff).unwrap_or_else(|e| format!("{{\"error\": \"{e}\"}}"));
-    let mut env = minijinja::Environment::new();
-    env.set_auto_escape_callback(|_| minijinja::AutoEscape::Html);
-    env.add_template("diff", DIFF_TEMPLATE)
-        .expect("diff HTML template is valid");
-    let tmpl = env.get_template("diff").expect("diff template registered");
+    let tmpl = templates::HTML_ENV
+        .get_template("diff")
+        .expect("diff template registered");
     tmpl.render(minijinja::context! {
-        base_css => style::BASE_CSS,
+        base_css => templates::BASE_CSS,
         diff_data => json,
         favicon_href => if favicon_href.is_empty() { "" } else { favicon_href },
         og => og.map(|o| minijinja::context! {

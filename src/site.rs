@@ -11,7 +11,7 @@ use crate::scan::ScanResult;
 use crate::store::ScanStore;
 use crate::style;
 
-const INDEX_TEMPLATE: &str = include_str!("templates/site_index_template.html");
+use crate::templates;
 
 /// Top-level site configuration, parsed from TOML.
 #[derive(Debug, Clone, Deserialize)]
@@ -183,7 +183,7 @@ pub fn generate_site(config: &SiteConfig, store: &ScanStore) -> Result<()> {
     std::fs::create_dir_all(out.join("diff")).context("failed to create diff output directory")?;
 
     // Write favicon
-    std::fs::write(out.join("favicon.svg"), og::FAVICON_SVG)
+    std::fs::write(out.join("favicon.svg"), templates::FAVICON_SVG)
         .context("failed to write favicon.svg")?;
 
     let nav = nav_link_html("../index.html");
@@ -302,16 +302,12 @@ pub fn generate_site(config: &SiteConfig, store: &ScanStore) -> Result<()> {
         None => index_meta.image_path.clone(),
     };
 
-    let mut env = minijinja::Environment::new();
-    env.set_auto_escape_callback(|_| minijinja::AutoEscape::Html);
-    env.add_template("index", INDEX_TEMPLATE)
-        .expect("index HTML template is valid");
-    let tmpl = env
+    let tmpl = templates::HTML_ENV
         .get_template("index")
         .expect("index template registered");
     let index_html = tmpl
         .render(minijinja::context! {
-            base_css => style::BASE_CSS,
+            base_css => templates::BASE_CSS,
             site_title => config.title,
             families => index_families,
             site_data => site_json,

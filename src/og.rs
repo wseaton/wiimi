@@ -1,35 +1,11 @@
 use std::path::Path;
 
 use anyhow::{Context, Result};
-use minijinja::Environment;
 
 use crate::diff::DiffResult;
 use crate::scan::ScanResult;
 use crate::site::{short_image_name, slug_for_image, SiteConfig};
-
-pub const FAVICON_SVG: &str = include_str!("templates/favicon.svg");
-
-const SCAN_TEMPLATE: &str = include_str!("templates/og_card_scan.svg");
-const DIFF_TEMPLATE: &str = include_str!("templates/og_card_diff.svg");
-const INDEX_TEMPLATE: &str = include_str!("templates/og_card_index.svg");
-
-/// Build a minijinja environment for SVG templates with a custom `svg_escape` filter.
-pub(crate) fn svg_env() -> Environment<'static> {
-    let mut env = Environment::new();
-    env.set_auto_escape_callback(|_| minijinja::AutoEscape::None);
-    env.add_filter("svg_escape", |v: String| -> String {
-        v.replace('&', "&amp;")
-            .replace('<', "&lt;")
-            .replace('>', "&gt;")
-    });
-    env.add_template("scan", SCAN_TEMPLATE)
-        .expect("scan SVG template is valid");
-    env.add_template("diff", DIFF_TEMPLATE)
-        .expect("diff SVG template is valid");
-    env.add_template("index", INDEX_TEMPLATE)
-        .expect("index SVG template is valid");
-    env
-}
+use crate::templates;
 
 /// Render an SVG string to a PNG byte vector at 1200x630.
 fn render_svg_to_png(svg: &str) -> Result<Vec<u8>> {
@@ -84,8 +60,7 @@ pub fn render_scan_card(scan: &ScanResult) -> Result<Vec<u8>> {
         scan.dormant_count
     );
 
-    let env = svg_env();
-    let tmpl = env
+    let tmpl = templates::SVG_ENV
         .get_template("scan")
         .context("missing scan SVG template")?;
     let svg = tmpl
@@ -138,8 +113,7 @@ pub fn render_diff_card(diff: &DiffResult) -> Result<Vec<u8>> {
         pkg_parts.join("  ")
     };
 
-    let env = svg_env();
-    let tmpl = env
+    let tmpl = templates::SVG_ENV
         .get_template("diff")
         .context("missing diff SVG template")?;
     let svg = tmpl
@@ -165,8 +139,7 @@ pub fn render_index_card(config: &SiteConfig) -> Result<Vec<u8>> {
         }
     );
 
-    let env = svg_env();
-    let tmpl = env
+    let tmpl = templates::SVG_ENV
         .get_template("index")
         .context("missing index SVG template")?;
     let svg = tmpl
@@ -389,21 +362,17 @@ mod tests {
 
     #[test]
     fn svg_escape_filter_handles_special_chars() {
-        let env = crate::og::svg_env();
-        let mut test_env = env;
-        test_env
-            .add_template("test", "{{ val|svg_escape }}")
+        let tmpl = crate::templates::SVG_ENV.get_template("scan").unwrap();
+        // Render with special chars and verify they're escaped in the output
+        let svg = tmpl
+            .render(minijinja::context! {
+                image => "a & b",
+                details => "x < y > z",
+                binaries => "ok",
+            })
             .unwrap();
-        let tmpl = test_env.get_template("test").unwrap();
-        assert_eq!(
-            tmpl.render(minijinja::context! { val => "a & b" }).unwrap(),
-            "a &amp; b"
-        );
-        assert_eq!(
-            tmpl.render(minijinja::context! { val => "a < b > c" })
-                .unwrap(),
-            "a &lt; b &gt; c"
-        );
+        assert!(svg.contains("a &amp; b"));
+        assert!(svg.contains("x &lt; y &gt; z"));
     }
 
     #[test]

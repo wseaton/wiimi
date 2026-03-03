@@ -12,6 +12,7 @@ mod scan;
 mod site;
 mod store;
 mod style;
+mod templates;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
@@ -212,7 +213,7 @@ async fn main() -> Result<()> {
                 };
                 let favicon_data_uri = format!(
                     "data:image/svg+xml;base64,{}",
-                    style::base64_encode(og::FAVICON_SVG.as_bytes())
+                    style::base64_encode(templates::FAVICON_SVG.as_bytes())
                 );
                 let output =
                     html::render_html_with_og(&result, bundle, None, &favicon_data_uri, "");
@@ -321,7 +322,7 @@ async fn main() -> Result<()> {
             } else {
                 let favicon_data_uri = format!(
                     "data:image/svg+xml;base64,{}",
-                    style::base64_encode(og::FAVICON_SVG.as_bytes())
+                    style::base64_encode(templates::FAVICON_SVG.as_bytes())
                 );
                 let output =
                     diff::render_diff_html_with_og(&diff_result, None, &favicon_data_uri, "");
