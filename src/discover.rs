@@ -3,6 +3,8 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use oci_client::client::ClientConfig;
 use oci_client::{Client, Reference};
+use tokio::sync::Semaphore;
+use tokio::task::JoinSet;
 
 use crate::registry::resolve_auth_for_reference;
 use crate::scan;
@@ -47,7 +49,8 @@ async fn list_all_tags(
 }
 
 /// Discover new images for a family: list tags from the registry, filter by
-/// pattern, scan anything not already in the store.
+/// pattern, scan anything not already in the store. Images are scanned
+/// concurrently up to `concurrency` at a time (a la Trivy's parallel scanning).
 pub async fn discover_family(
     family: &FamilyConfig,
     store: &ScanStore,
@@ -55,6 +58,7 @@ pub async fn discover_family(
     dockerconfig: Option<&[u8]>,
     force: bool,
     no_cache: bool,
+    concurrency: usize,
 ) -> Result<DiscoverySummary> {
     // Build a reference for tag listing (tag is ignored, just need registry/repo)
     let ref_str = format!("{}/{}:latest", family.registry, family.repository);
@@ -87,30 +91,68 @@ pub async fn discover_family(
     let matched = matched_tags.len();
     let ignored = total_tags - matched;
 
-    let mut new_scanned = 0;
+    // Partition into cached (already in store) and images that need scanning.
+    let mut to_scan = Vec::new();
     let mut cached = 0;
 
-    for (idx, tag) in matched_tags.iter().enumerate() {
+    for tag in &matched_tags {
         let image = family.image_ref(tag);
         if !force && store.contains(&image)? {
             tracing::debug!(image = %image, "already in store, skipping");
             cached += 1;
-            continue;
+        } else {
+            to_scan.push(image);
         }
+    }
 
-        println!("  [{}/{}] Scanning: {image}", idx + 1, matched);
-        let use_blob_cache = !no_cache;
-        let use_parse_cache = !no_cache;
-        let result = scan::scan_image(
-            &image,
-            dockerconfig,
-            vec![],
-            true,
-            use_blob_cache,
-            use_parse_cache,
-        )
-        .await?;
-        store.upsert(&result)?;
+    let total_to_scan = to_scan.len();
+    if total_to_scan == 0 {
+        return Ok(DiscoverySummary {
+            family_name: family.name.clone(),
+            matched,
+            new_scanned: 0,
+            cached,
+            ignored,
+        });
+    }
+
+    println!("  Scanning {total_to_scan} images with concurrency={concurrency}");
+
+    // Own the dockerconfig bytes so they can be shared across spawned tasks.
+    let dockerconfig_owned: Arc<Option<Vec<u8>>> = Arc::new(dockerconfig.map(|d| d.to_vec()));
+    let use_blob_cache = !no_cache;
+    let use_parse_cache = !no_cache;
+    let semaphore = Arc::new(Semaphore::new(concurrency));
+
+    let mut join_set = JoinSet::new();
+    for (idx, image) in to_scan.into_iter().enumerate() {
+        let sem = semaphore.clone();
+        let dc = dockerconfig_owned.clone();
+        join_set.spawn(async move {
+            let _permit = sem
+                .acquire()
+                .await
+                .map_err(|e| anyhow::anyhow!("semaphore closed: {e}"))?;
+            println!("  [{}/{}] Scanning: {image}", idx + 1, total_to_scan);
+            let result = scan::scan_image(
+                &image,
+                dc.as_deref(),
+                vec![],
+                true,
+                use_blob_cache,
+                use_parse_cache,
+            )
+            .await?;
+            Ok::<_, anyhow::Error>(result)
+        });
+    }
+
+    // Collect results and persist. ScanStore isn't Sync so we upsert as
+    // results arrive on the main task rather than inside the spawned futures.
+    let mut new_scanned = 0;
+    while let Some(result) = join_set.join_next().await {
+        let scan_result = result.context("scan task panicked")??;
+        store.upsert(&scan_result)?;
         new_scanned += 1;
     }
 

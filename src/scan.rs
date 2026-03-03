@@ -1221,10 +1221,14 @@ async fn scan_from_channel(
     progress: ScanProgress,
     parse_cache: Option<Arc<ParseCache>>,
 ) -> Result<Vec<BinaryScanResult>> {
+    // Parsing ELF headers + checking parse cache is near-instant, so we can
+    // afford a deep pipeline. The channel capacity (64) provides the real
+    // backpressure; this just prevents unbounded JoinSet growth.
     let max_inflight = std::thread::available_parallelism()
         .map(|p| p.get())
         .unwrap_or(4)
-        * 2;
+        .max(16)
+        * 16;
 
     let mut join_set = JoinSet::new();
     let mut results = Vec::new();

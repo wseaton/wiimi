@@ -94,6 +94,10 @@ enum Command {
         /// Disable blob and parse caches (stream-only, saves disk on CI runners)
         #[arg(long)]
         no_cache: bool,
+
+        /// Number of images to scan concurrently
+        #[arg(long, default_value = "4")]
+        concurrency: usize,
     },
 
     /// Generate a static site from stored scan results
@@ -225,6 +229,7 @@ async fn main() -> Result<()> {
             docker_config,
             insecure_registry,
             no_cache,
+            concurrency,
         } => {
             let site_config = site::SiteConfig::load(std::path::Path::new(&config))?;
             let store = open_store(db.as_deref())?;
@@ -240,6 +245,7 @@ async fn main() -> Result<()> {
                     dockerconfig_bytes.as_deref(),
                     force,
                     no_cache,
+                    concurrency,
                 )
                 .await?;
                 println!(
