@@ -6,6 +6,7 @@ use serde::Deserialize;
 
 use crate::diff;
 use crate::html;
+use crate::og;
 use crate::scan::ScanResult;
 use crate::store::ScanStore;
 use crate::style;
@@ -135,10 +136,15 @@ pub fn generate_site(config: &SiteConfig, store: &ScanStore) -> Result<()> {
     std::fs::create_dir_all(out.join("scan")).context("failed to create scan output directory")?;
     std::fs::create_dir_all(out.join("diff")).context("failed to create diff output directory")?;
 
+    // Write favicon
+    std::fs::write(out.join("favicon.svg"), og::FAVICON_SVG)
+        .context("failed to write favicon.svg")?;
+
     let mut site_data = SiteData {
         families: Vec::new(),
     };
     let mut family_sections_html = String::new();
+    let mut og_data: Vec<og::FamilyOgData> = Vec::new();
 
     for (family_idx, family) in config.families.iter().enumerate() {
         let scans = resolve_family_scans(family, store)?;
@@ -147,10 +153,12 @@ pub fn generate_site(config: &SiteConfig, store: &ScanStore) -> Result<()> {
             continue;
         }
 
-        // Generate individual scan pages
+        // Generate individual scan pages with OG meta tags
         for scan in &scans {
             let html = html::render_html(scan, style::BundleMode::Cdn);
             let html = inject_nav(&html, "../index.html");
+            let meta = og::scan_og_meta(scan);
+            let html = inject_og_meta(&html, &meta, "../favicon.svg");
             let slug = slug_for_image(&scan.image);
             let path = out.join("scan").join(format!("{slug}.html"));
             std::fs::write(&path, &html)
@@ -167,6 +175,8 @@ pub fn generate_site(config: &SiteConfig, store: &ScanStore) -> Result<()> {
             let diff_result = diff::compute_diff(from, to);
             let html = diff::render_diff_html(&diff_result);
             let html = inject_nav(&html, "../index.html");
+            let meta = og::diff_og_meta(&diff_result);
+            let html = inject_og_meta(&html, &meta, "../favicon.svg");
 
             let from_slug = slug_for_image(&from.image);
             let to_slug = slug_for_image(&to.image);
@@ -187,20 +197,64 @@ pub fn generate_site(config: &SiteConfig, store: &ScanStore) -> Result<()> {
 
         // Build the HTML section for this family
         family_sections_html.push_str(&render_family_section(family_idx, family, &scans));
+
+        og_data.push((scans, pairs));
     }
 
-    // Render index page
+    // Generate OG card images
+    og::generate_og_images(config, &og_data, out)?;
+
+    // Render index page with OG meta
     let site_json = serde_json::to_string(&site_data).context("failed to serialize site data")?;
+    let index_meta = og::index_og_meta(config);
 
     let index_html = INDEX_TEMPLATE
         .replace("/*BASE_STYLES*/", style::BASE_CSS)
         .replace("/*SITE_TITLE*/", &config.title)
         .replace("/*FAMILY_SECTIONS*/", &family_sections_html)
-        .replace("/*SITE_DATA*/null", &site_json);
+        .replace("/*SITE_DATA*/null", &site_json)
+        .replace("/*OG_TITLE*/", &html_attr_escape(&index_meta.title))
+        .replace(
+            "/*OG_DESCRIPTION*/",
+            &html_attr_escape(&index_meta.description),
+        )
+        .replace("/*OG_IMAGE*/", &index_meta.image_path)
+        .replace("/*OG_TYPE*/", &index_meta.og_type);
 
     std::fs::write(out.join("index.html"), &index_html).context("failed to write index.html")?;
 
     Ok(())
+}
+
+/// Inject OG meta tags and favicon href into a rendered scan/diff HTML page.
+fn inject_og_meta(html: &str, meta: &og::OgMeta, favicon_href: &str) -> String {
+    let og_block = format!(
+        concat!(
+            "<meta name=\"description\" content=\"{desc}\">\n",
+            "<meta property=\"og:title\" content=\"{title}\">\n",
+            "<meta property=\"og:description\" content=\"{desc}\">\n",
+            "<meta property=\"og:image\" content=\"{image}\">\n",
+            "<meta property=\"og:type\" content=\"{og_type}\">\n",
+            "<meta name=\"twitter:card\" content=\"summary_large_image\">\n",
+            "<meta name=\"twitter:title\" content=\"{title}\">\n",
+            "<meta name=\"twitter:description\" content=\"{desc}\">\n",
+            "<meta name=\"twitter:image\" content=\"{image}\">",
+        ),
+        title = html_attr_escape(&meta.title),
+        desc = html_attr_escape(&meta.description),
+        image = meta.image_path,
+        og_type = meta.og_type,
+    );
+    html.replace("<!--OG_META-->", &og_block)
+        .replace("/*FAVICON_HREF*/", favicon_href)
+}
+
+/// Escape text for use in HTML attribute values.
+fn html_attr_escape(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('"', "&quot;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
 }
 
 /// All (i, j) pairs where i < j, for N-choose-2 diff computation.
@@ -334,7 +388,7 @@ fn render_family_section(
 }
 
 /// Shorten an image reference to just the tag or last meaningful segment.
-fn short_image_name(image: &str) -> String {
+pub fn short_image_name(image: &str) -> String {
     // "ghcr.io/llm-d/llm-d-cuda:v0.5.0" -> "llm-d-cuda:v0.5.0"
     if let Some(path_and_tag) = image.split('/').next_back() {
         path_and_tag.to_string()
@@ -390,6 +444,7 @@ mod tests {
                 soname: None,
                 rpath: vec![],
                 runpath: vec![],
+                layer_index: None,
             }],
             effective_cc_min: Some(cc(7, 0)),
             effective_cc_max: Some(cc(9, 0)),
@@ -408,6 +463,7 @@ mod tests {
             },
             labels: HashMap::new(),
             env_vars: vec![],
+            layer_history: vec![],
         }
     }
 

@@ -259,6 +259,7 @@ mod tests {
                 soname: Some("libtest.so".to_string()),
                 rpath: vec![],
                 runpath: vec![],
+                layer_index: None,
             }],
             effective_cc_min: Some(cc(7, 0)),
             effective_cc_max: Some(cc(9, 0)),
@@ -289,6 +290,7 @@ mod tests {
             },
             labels: HashMap::from([("maintainer".to_string(), "test".to_string())]),
             env_vars: vec![("PATH".to_string(), "/usr/bin".to_string())],
+            layer_history: vec![],
         }
     }
 

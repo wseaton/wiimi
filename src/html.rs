@@ -20,6 +20,8 @@ struct CompactBinary {
     runpath: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     package: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    layer_index: Option<usize>,
 }
 
 /// Top-level data structure injected into the HTML template as JSON.
@@ -44,6 +46,8 @@ struct HtmlData<'a> {
     labels: &'a std::collections::HashMap<String, String>,
     /// All environment variables from the image config.
     env_vars: &'a [(String, String)],
+    /// Build history: layer index to Dockerfile command mapping.
+    layer_history: &'a [crate::scan::LayerInfo],
 }
 
 /// Render the scan result as an interactive HTML page.
@@ -77,6 +81,7 @@ pub fn render_html(result: &ScanResult, bundle: BundleMode) -> String {
                 rpath: b.rpath.clone(),
                 runpath: b.runpath.clone(),
                 package: result.environment.file_owners.get(&b.path).cloned(),
+                layer_index: b.layer_index,
             }
         })
         .collect();
@@ -110,14 +115,22 @@ pub fn render_html(result: &ScanResult, bundle: BundleMode) -> String {
         environment: &result.environment,
         labels: &result.labels,
         env_vars: &result.env_vars,
+        layer_history: &result.layer_history,
     };
 
     let json = serde_json::to_string(&data).unwrap_or_else(|e| format!("{{\"error\": \"{e}\"}}"));
+
+    let favicon_data_uri = format!(
+        "data:image/svg+xml;base64,{}",
+        crate::style::base64_encode(crate::og::FAVICON_SVG.as_bytes())
+    );
 
     TEMPLATE
         .replace("<!--SCRIPTS-->", &style::script_block(bundle))
         .replace("/*BASE_STYLES*/", style::BASE_CSS)
         .replace("/*GRAPH_DATA*/null", &json)
+        .replace("/*FAVICON_HREF*/", &favicon_data_uri)
+        .replace("<!--OG_META-->", "")
 }
 
 /// Compute the global SM range (min, max) across all binaries for consistent bar rendering.
@@ -186,6 +199,7 @@ mod tests {
                 rpath: vec![],
                 runpath: vec![],
                 package: None,
+                layer_index: None,
             },
         );
         ScanResult {
@@ -206,6 +220,7 @@ mod tests {
                 soname: None,
                 rpath: vec![],
                 runpath: vec![],
+                layer_index: None,
             }],
             effective_cc_min: Some(cc(7, 0)),
             effective_cc_max: Some(cc(9, 0)),
@@ -220,6 +235,7 @@ mod tests {
             environment: empty_env(),
             labels: HashMap::new(),
             env_vars: vec![],
+            layer_history: vec![],
         }
     }
 
@@ -266,6 +282,7 @@ mod tests {
             environment: empty_env(),
             labels: HashMap::new(),
             env_vars: vec![],
+            layer_history: vec![],
         };
         let html = super::render_html(&result, crate::style::BundleMode::SelfContained);
         assert!(html.starts_with("<!DOCTYPE html>"));
@@ -285,6 +302,7 @@ mod tests {
                 soname: None,
                 rpath: vec![],
                 runpath: vec![],
+                layer_index: None,
             },
             BinaryScanResult {
                 path: "/b.so".to_string(),
@@ -296,6 +314,7 @@ mod tests {
                 soname: None,
                 rpath: vec![],
                 runpath: vec![],
+                layer_index: None,
             },
         ];
         let (min, max) = super::compute_sm_range(&binaries);
@@ -331,6 +350,7 @@ mod tests {
             environment: empty_env(),
             labels: HashMap::new(),
             env_vars: vec![],
+            layer_history: vec![],
         };
         result
             .labels

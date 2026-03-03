@@ -45,6 +45,12 @@ pub struct BinarySmDiff {
     /// System package that owns this file, if known.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub package: Option<String>,
+    /// Layer index of this binary in the "from" image.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub layer_before: Option<usize>,
+    /// Layer index of this binary in the "to" image.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub layer_after: Option<usize>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -107,13 +113,20 @@ pub struct DiffResult {
 // Diff computation
 // ---------------------------------------------------------------------------
 
+type BinaryIndex<'a> = (
+    &'a [ComputeCapability],
+    &'a [ComputeCapability],
+    Option<usize>,
+);
+
 /// Dedup binaries by path (last wins, matching container layer semantics).
-fn index_binaries_by_path(
-    result: &ScanResult,
-) -> HashMap<&str, (&[ComputeCapability], &[ComputeCapability])> {
+fn index_binaries_by_path(result: &ScanResult) -> HashMap<&str, BinaryIndex<'_>> {
     let mut map = HashMap::new();
     for b in &result.binaries {
-        map.insert(b.path.as_str(), (b.cubins.as_slice(), b.ptx.as_slice()));
+        map.insert(
+            b.path.as_str(),
+            (b.cubins.as_slice(), b.ptx.as_slice(), b.layer_index),
+        );
     }
     map
 }
@@ -332,7 +345,7 @@ pub fn compute_diff(from: &ScanResult, to: &ScanResult) -> DiffResult {
     for path in &all_paths {
         match (from_bins.get(path), to_bins.get(path)) {
             (Some(_), None) => {
-                let (cubins, ptx) = from_bins[path];
+                let (cubins, ptx, layer_idx) = from_bins[path];
                 if !cubins.is_empty() || !ptx.is_empty() {
                     binary_diffs.push(BinarySmDiff {
                         path: path.to_string(),
@@ -343,11 +356,13 @@ pub fn compute_diff(from: &ScanResult, to: &ScanResult) -> DiffResult {
                         ptx_after: vec![],
                         renamed: false,
                         package: from.environment.file_owners.get(*path).cloned(),
+                        layer_before: layer_idx,
+                        layer_after: None,
                     });
                 }
             }
             (None, Some(_)) => {
-                let (cubins, ptx) = to_bins[path];
+                let (cubins, ptx, layer_idx) = to_bins[path];
                 if !cubins.is_empty() || !ptx.is_empty() {
                     binary_diffs.push(BinarySmDiff {
                         path: path.to_string(),
@@ -358,10 +373,12 @@ pub fn compute_diff(from: &ScanResult, to: &ScanResult) -> DiffResult {
                         ptx_after: ptx.to_vec(),
                         renamed: false,
                         package: to.environment.file_owners.get(*path).cloned(),
+                        layer_before: None,
+                        layer_after: layer_idx,
                     });
                 }
             }
-            (Some((fc, fp)), Some((tc, tp))) => {
+            (Some((fc, fp, fl)), Some((tc, tp, tl))) => {
                 let cubins_changed = fc != tc;
                 let ptx_changed = fp != tp;
                 if cubins_changed || ptx_changed {
@@ -374,6 +391,8 @@ pub fn compute_diff(from: &ScanResult, to: &ScanResult) -> DiffResult {
                         ptx_after: tp.to_vec(),
                         renamed: false,
                         package: to.environment.file_owners.get(*path).cloned(),
+                        layer_before: *fl,
+                        layer_after: *tl,
                     });
                 }
             }
@@ -499,9 +518,15 @@ pub fn compute_diff(from: &ScanResult, to: &ScanResult) -> DiffResult {
 
 pub fn render_diff_html(diff: &DiffResult) -> String {
     let json = serde_json::to_string(diff).unwrap_or_else(|e| format!("{{\"error\": \"{e}\"}}"));
+    let favicon_data_uri = format!(
+        "data:image/svg+xml;base64,{}",
+        crate::style::base64_encode(crate::og::FAVICON_SVG.as_bytes())
+    );
     DIFF_TEMPLATE
         .replace("/*BASE_STYLES*/", style::BASE_CSS)
         .replace("/*DIFF_DATA*/null", &json)
+        .replace("/*FAVICON_HREF*/", &favicon_data_uri)
+        .replace("<!--OG_META-->", "")
 }
 
 // ---------------------------------------------------------------------------
@@ -561,6 +586,7 @@ mod tests {
             environment: empty_env(),
             labels: HashMap::new(),
             env_vars: vec![],
+            layer_history: vec![],
         }
     }
 
@@ -579,6 +605,7 @@ mod tests {
             soname: None,
             rpath: vec![],
             runpath: vec![],
+            layer_index: None,
         }
     }
 

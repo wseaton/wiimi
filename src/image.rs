@@ -60,6 +60,66 @@ pub struct ImageConfig {
     pub labels: HashMap<String, String>,
 }
 
+/// A single entry from the OCI image config `history` array.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct HistoryEntry {
+    /// The Dockerfile command that produced this layer (e.g. "RUN apt-get install ...").
+    pub created_by: Option<String>,
+    /// ISO 8601 timestamp of when this layer was created.
+    pub created: Option<String>,
+    /// True for entries that don't produce filesystem layers (ENV, LABEL, CMD, etc.).
+    pub empty_layer: bool,
+}
+
+/// Parse the OCI config `history` array into structured entries.
+///
+/// Fail-soft: returns an empty vec on missing or malformed history, never errors.
+pub fn parse_history(config_json: &str) -> Vec<HistoryEntry> {
+    let parsed: serde_json::Value = match serde_json::from_str(config_json) {
+        Ok(v) => v,
+        Err(_) => return Vec::new(),
+    };
+
+    let history = match parsed.get("history").and_then(|v| v.as_array()) {
+        Some(arr) => arr,
+        None => return Vec::new(),
+    };
+
+    history
+        .iter()
+        .map(|entry| HistoryEntry {
+            created_by: entry
+                .get("created_by")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string()),
+            created: entry
+                .get("created")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string()),
+            empty_layer: entry
+                .get("empty_layer")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false),
+        })
+        .collect()
+}
+
+/// Map OCI history entries to manifest layer indices.
+///
+/// The OCI config history contains entries for both filesystem-producing layers
+/// and empty layers (ENV, LABEL, CMD, etc.). This filters to non-empty entries
+/// and pairs each with its corresponding manifest layer index.
+///
+/// Returns `(layer_index, HistoryEntry)` tuples where `layer_index` corresponds
+/// to the Nth entry in `manifest.layers`.
+pub fn map_history_to_layers(history: &[HistoryEntry]) -> Vec<(usize, &HistoryEntry)> {
+    history
+        .iter()
+        .filter(|e| !e.empty_layer)
+        .enumerate()
+        .collect()
+}
+
 /// A file extracted from an image layer with its priority classification.
 #[derive(Debug)]
 pub struct DiscoveredBinary {
@@ -69,6 +129,8 @@ pub struct DiscoveredBinary {
     /// Pre-computed SHA256 hex digest of `data`, set during extraction to avoid
     /// re-hashing in the consumer.
     pub content_sha256: Option<String>,
+    /// Index of the manifest layer this binary was extracted from.
+    pub layer_index: usize,
 }
 
 /// Metadata discovered while iterating tar entries (symlinks, config files, packages).
@@ -327,7 +389,7 @@ pub async fn stream_binaries_to(
                                 .with_context(|| format!("failed to open cached blob {}", cached_path.display()))?;
                             let counting_reader =
                                 crate::progress::ProgressReader::new(file, layer_bar.clone());
-                            let (manifest, rpm_data) = extract_and_send(counting_reader, &config, &tx, &meta_tx, &progress)?;
+                            let (manifest, rpm_data) = extract_and_send(counting_reader, &config, &tx, &meta_tx, &progress, layer_idx)?;
                             if let Some(ref lc) = lc {
                                 lc.put(&digest, &manifest, rpm_data.as_deref());
                             }
@@ -364,19 +426,19 @@ pub async fn stream_binaries_to(
                                     crate::cache::CachingReader::new(sync_reader, cache_path);
                                 let counting_reader =
                                     crate::progress::ProgressReader::new(caching_reader, layer_bar.clone());
-                                extract_and_send(counting_reader, &config, &tx, &meta_tx, &progress)
+                                extract_and_send(counting_reader, &config, &tx, &meta_tx, &progress, layer_idx)
                             }
                             Err(e) => {
                                 tracing::debug!(error = %e, "cache prepare failed, streaming without cache");
                                 let counting_reader =
                                     crate::progress::ProgressReader::new(sync_reader, layer_bar.clone());
-                                extract_and_send(counting_reader, &config, &tx, &meta_tx, &progress)
+                                extract_and_send(counting_reader, &config, &tx, &meta_tx, &progress, layer_idx)
                             }
                         }
                     } else {
                         let counting_reader =
                             crate::progress::ProgressReader::new(sync_reader, layer_bar.clone());
-                        extract_and_send(counting_reader, &config, &tx, &meta_tx, &progress)
+                        extract_and_send(counting_reader, &config, &tx, &meta_tx, &progress, layer_idx)
                     };
 
                     let (manifest, rpm_data) = extract_result?;
@@ -422,6 +484,7 @@ fn extract_and_send<R: Read>(
     tx: &tokio::sync::mpsc::Sender<DiscoveredBinary>,
     meta_tx: &tokio::sync::mpsc::UnboundedSender<DiscoveredMetadata>,
     progress: &ScanProgress,
+    layer_idx: usize,
 ) -> Result<(LayerManifest, Option<Vec<u8>>)> {
     let gz = GzDecoder::new(reader);
     let mut archive = tar::Archive::new(gz);
@@ -596,6 +659,7 @@ fn extract_and_send<R: Read>(
                 data,
                 priority,
                 content_sha256: Some(content_sha256),
+                layer_index: layer_idx,
             })
             .is_err()
         {
@@ -705,7 +769,8 @@ mod tests {
 
     use crate::image::{
         classify_metadata, classify_path, extract_site_packages_dir, is_elf, is_shared_library,
-        parse_python_metadata, BinaryPriority, ImageConfig, MetadataKind,
+        map_history_to_layers, parse_history, parse_python_metadata, BinaryPriority, ImageConfig,
+        MetadataKind,
     };
 
     fn test_config() -> ImageConfig {
@@ -1109,5 +1174,85 @@ mod tests {
         }"#;
         let config = ImageConfig::parse(json).unwrap();
         assert!(config.labels.is_empty());
+    }
+
+    // -- OCI history parsing --
+
+    #[test]
+    fn parse_history_realistic() {
+        let json = r#"{
+            "config": {"Env": []},
+            "history": [
+                {"created": "2024-01-01T00:00:00Z", "created_by": "ADD file:abc123 in /", "empty_layer": false},
+                {"created": "2024-01-01T00:01:00Z", "created_by": "ENV CUDA_VERSION=12.4", "empty_layer": true},
+                {"created": "2024-01-01T00:02:00Z", "created_by": "RUN /bin/sh -c apt-get install -y libcublas", "empty_layer": false},
+                {"created": "2024-01-01T00:03:00Z", "created_by": "LABEL maintainer=test", "empty_layer": true},
+                {"created": "2024-01-01T00:04:00Z", "created_by": "COPY /wheels /wheels", "empty_layer": false}
+            ]
+        }"#;
+
+        let history = parse_history(json);
+        assert_eq!(history.len(), 5);
+        assert!(!history[0].empty_layer);
+        assert!(history[1].empty_layer);
+        assert!(!history[2].empty_layer);
+        assert!(history[3].empty_layer);
+        assert!(!history[4].empty_layer);
+        assert_eq!(
+            history[2].created_by.as_deref(),
+            Some("RUN /bin/sh -c apt-get install -y libcublas")
+        );
+    }
+
+    #[test]
+    fn parse_history_missing() {
+        let json = r#"{"config": {}}"#;
+        let history = parse_history(json);
+        assert!(history.is_empty());
+    }
+
+    #[test]
+    fn parse_history_invalid_json() {
+        let history = parse_history("not json at all");
+        assert!(history.is_empty());
+    }
+
+    #[test]
+    fn parse_history_empty_array() {
+        let json = r#"{"history": []}"#;
+        let history = parse_history(json);
+        assert!(history.is_empty());
+    }
+
+    #[test]
+    fn map_history_to_layers_skips_empty() {
+        let json = r#"{
+            "history": [
+                {"created_by": "ADD base", "empty_layer": false},
+                {"created_by": "ENV FOO=bar", "empty_layer": true},
+                {"created_by": "RUN install stuff", "empty_layer": false},
+                {"created_by": "CMD [\"python\"]", "empty_layer": true},
+                {"created_by": "COPY wheels", "empty_layer": false}
+            ]
+        }"#;
+
+        let history = parse_history(json);
+        let mapping = map_history_to_layers(&history);
+
+        // Should only have 3 non-empty entries
+        assert_eq!(mapping.len(), 3);
+
+        // Layer indices should be 0, 1, 2 (corresponding to manifest layers)
+        assert_eq!(mapping[0].0, 0);
+        assert_eq!(mapping[1].0, 1);
+        assert_eq!(mapping[2].0, 2);
+
+        // Verify the commands match the non-empty entries
+        assert_eq!(mapping[0].1.created_by.as_deref(), Some("ADD base"));
+        assert_eq!(
+            mapping[1].1.created_by.as_deref(),
+            Some("RUN install stuff")
+        );
+        assert_eq!(mapping[2].1.created_by.as_deref(), Some("COPY wheels"));
     }
 }

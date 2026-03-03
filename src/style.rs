@@ -37,6 +37,12 @@ pub fn script_block(mode: BundleMode) -> String {
     }
 }
 
+/// Base64-encode bytes (thin wrapper around the `base64` crate).
+pub fn base64_encode(data: &[u8]) -> String {
+    use base64::Engine;
+    base64::engine::general_purpose::STANDARD.encode(data)
+}
+
 #[cfg(test)]
 mod tests {
     use crate::style::{script_block, BundleMode};

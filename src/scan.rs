@@ -22,6 +22,7 @@ fn try_resolve_from_manifest(
     layer_manifest: &crate::cache::LayerManifest,
     config: &ImageConfig,
     parse_cache: &ParseCache,
+    layer_idx: usize,
 ) -> Option<(Vec<BinaryScanResult>, Vec<image::DiscoveredMetadata>)> {
     let mut binaries = Vec::new();
 
@@ -43,6 +44,7 @@ fn try_resolve_from_manifest(
             soname: cached.soname,
             rpath: cached.rpath,
             runpath: cached.runpath,
+            layer_index: Some(layer_idx),
         });
     }
 
@@ -116,6 +118,9 @@ pub struct BinaryScanResult {
     /// DT_RUNPATH entries.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub runpath: Vec<String>,
+    /// Index of the manifest layer this binary was extracted from.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub layer_index: Option<usize>,
 }
 
 /// A node in the ELF dependency graph.
@@ -146,6 +151,9 @@ pub struct DepNode {
     /// System package that owns this file (e.g. "libcuda1 550.90.07-1").
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub package: Option<String>,
+    /// Index of the manifest layer this binary came from.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub layer_index: Option<usize>,
 }
 
 impl DepNode {
@@ -231,7 +239,7 @@ fn build_dep_graph(
         let path = soname_map.get(&soname);
         let binary = path.and_then(|p| path_to_binary.get(p.as_str()));
 
-        let (cubins, ptx, needed, priority, size, rpath, runpath) = match binary {
+        let (cubins, ptx, needed, priority, size, rpath, runpath, layer_index) = match binary {
             Some(b) => (
                 b.cubins.clone(),
                 b.ptx.clone(),
@@ -240,6 +248,7 @@ fn build_dep_graph(
                 b.size,
                 b.rpath.clone(),
                 b.runpath.clone(),
+                b.layer_index,
             ),
             None => (
                 vec![],
@@ -249,6 +258,7 @@ fn build_dep_graph(
                 0,
                 vec![],
                 vec![],
+                None,
             ),
         };
 
@@ -285,6 +295,7 @@ fn build_dep_graph(
                 rpath,
                 runpath,
                 package,
+                layer_index,
             },
         );
     }
@@ -371,6 +382,19 @@ pub struct EnvironmentInfo {
     pub file_owners: HashMap<String, String>,
 }
 
+/// Metadata about a single image layer, derived from OCI history.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct LayerInfo {
+    /// Index into the manifest layers array.
+    pub index: usize,
+    /// The Dockerfile command that created this layer (e.g. "RUN apt-get install ...").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created_by: Option<String>,
+    /// ISO 8601 timestamp of when this layer was created.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created: Option<String>,
+}
+
 /// Full scan result for an image.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ScanResult {
@@ -396,6 +420,9 @@ pub struct ScanResult {
     /// All environment variables from the image config.
     #[serde(default)]
     pub env_vars: Vec<(String, String)>,
+    /// Build history: maps manifest layer indices to their Dockerfile commands.
+    #[serde(default)]
+    pub layer_history: Vec<LayerInfo>,
 }
 
 /// Extract metadata from image config env vars.
@@ -1052,7 +1079,7 @@ pub async fn scan_image(
                 None => break 'resolve false,
             };
 
-            match try_resolve_from_manifest(&layer_manifest, &config, parse_cache) {
+            match try_resolve_from_manifest(&layer_manifest, &config, parse_cache, idx) {
                 Some((binaries, metadata)) => {
                     let num_binaries = binaries.len() as u64;
                     let layer_size = u64::try_from(layer.size).unwrap_or(0);
@@ -1198,6 +1225,18 @@ pub async fn scan_image(
         compute_effective_range(&reachable_cuda);
     warnings.extend(collision_warnings);
 
+    // Build layer history from OCI config
+    let history = image::parse_history(&config_json);
+    let layer_mapping = image::map_history_to_layers(&history);
+    let layer_history: Vec<LayerInfo> = layer_mapping
+        .into_iter()
+        .map(|(idx, entry)| LayerInfo {
+            index: idx,
+            created_by: entry.created_by.clone(),
+            created: entry.created.clone(),
+        })
+        .collect();
+
     Ok(ScanResult {
         image: image_str.to_string(),
         metadata,
@@ -1212,6 +1251,7 @@ pub async fn scan_image(
         environment,
         labels: config.labels.clone(),
         env_vars: config.env.clone(),
+        layer_history,
     })
 }
 
@@ -1278,6 +1318,8 @@ fn scan_single_binary(
         .content_sha256
         .unwrap_or_else(|| hex::encode(Sha256::digest(&binary.data)));
 
+    let layer_index = Some(binary.layer_index);
+
     // Check parse cache
     if let Some(cache) = parse_cache {
         if let Some(cached) = cache.get(&content_hash) {
@@ -1292,6 +1334,7 @@ fn scan_single_binary(
                 soname: cached.soname,
                 rpath: cached.rpath,
                 runpath: cached.runpath,
+                layer_index,
             });
         }
     }
@@ -1351,6 +1394,7 @@ fn scan_single_binary(
         soname: elf_info.soname,
         rpath: elf_info.rpath,
         runpath: elf_info.runpath,
+        layer_index,
     })
 }
 
@@ -1472,6 +1516,22 @@ pub fn format_report(result: &ScanResult) -> String {
                 "  System packages = {} packages\n",
                 env.system_packages.len()
             ));
+        }
+        out.push('\n');
+    }
+
+    // Build history section
+    if !result.layer_history.is_empty() {
+        out.push_str("Build history:\n");
+        for layer in &result.layer_history {
+            let cmd = layer.created_by.as_deref().unwrap_or("(unknown)");
+            // Truncate long commands for readability
+            let display = if cmd.len() > 100 {
+                format!("{}...", &cmd[..97])
+            } else {
+                cmd.to_string()
+            };
+            out.push_str(&format!("  Layer {}: {display}\n", layer.index));
         }
         out.push('\n');
     }
@@ -1696,13 +1756,22 @@ fn render_tree_node(
         None => String::new(),
     };
 
+    // Format layer annotation
+    let layer_annotation = match node {
+        Some(n) => n
+            .layer_index
+            .map(|idx| format!("  [L{idx}]"))
+            .unwrap_or_default(),
+        None => String::new(),
+    };
+
     let display_name = match node {
         Some(n) => n.path.as_str(),
         None => soname,
     };
 
     out.push_str(&format!(
-        "  {prefix}{connector}{display_name}{cc_annotation}{rpath_annotation}\n"
+        "  {prefix}{connector}{display_name}{cc_annotation}{layer_annotation}{rpath_annotation}\n"
     ));
 
     // Cycle detection
@@ -1830,6 +1899,7 @@ mod tests {
             soname: None,
             rpath: vec![],
             runpath: vec![],
+            layer_index: None,
         }
     }
 
@@ -1853,6 +1923,7 @@ mod tests {
             rpath: vec![],
             runpath: vec![],
             package: None,
+            layer_index: None,
         }
     }
 
@@ -2331,6 +2402,7 @@ mod tests {
             environment: empty_env(),
             labels: HashMap::new(),
             env_vars: vec![],
+            layer_history: vec![],
         };
         let report = format_report(&result);
         assert!(report.contains("ghcr.io/test/image:v1"));
@@ -2363,6 +2435,7 @@ mod tests {
             environment: empty_env(),
             labels: HashMap::new(),
             env_vars: vec![],
+            layer_history: vec![],
         };
         let report = format_report(&result);
         assert!(report.contains("(none found)"));
@@ -2390,6 +2463,7 @@ mod tests {
             environment: empty_env(),
             labels: HashMap::new(),
             env_vars: vec![],
+            layer_history: vec![],
         };
         let report = format_report(&result);
         assert!(report.contains("Dormant (not reachable from entrypoint): 42 binaries"));
@@ -2534,6 +2608,7 @@ mod tests {
             environment: empty_env(),
             labels: HashMap::new(),
             env_vars: vec![],
+            layer_history: vec![],
         };
         let report = format_report(&result);
         assert!(report.contains("Resolution issues:"));
@@ -2736,6 +2811,7 @@ Status: install ok installed
             environment: env,
             labels: HashMap::new(),
             env_vars: vec![],
+            layer_history: vec![],
         };
         let report = format_report(&result);
         assert!(report.contains("Environment:"));
@@ -3578,5 +3654,43 @@ Status: install ok installed
                 .contains_key("/root/.cache/uv/archive-v0/abc123/cuda/core/utils.py"),
             "uv cache symlink should be filtered from the symlinks map"
         );
+    }
+
+    #[test]
+    fn backwards_compat_deserialize_without_layer_fields() {
+        // Verify old serialized data (without layer_index/layer_history) deserializes cleanly
+        let json = r#"{
+            "image": "old:v1",
+            "metadata": {"cuda_version": "12.4"},
+            "binaries": [{
+                "path": "/lib/test.so",
+                "priority": "LinkerLibrary",
+                "size": 1024,
+                "cubins": [{"major": 7, "minor": 0}],
+                "ptx": [],
+                "needed": []
+            }],
+            "effective_cc_min": {"major": 7, "minor": 0},
+            "effective_cc_max": {"major": 7, "minor": 0},
+            "has_ptx_forward_compat": false,
+            "warnings": [],
+            "reachable_count": 1,
+            "dormant_count": 0,
+            "environment": {
+                "python_environments": [],
+                "system_packages": [],
+                "ld_conf_paths": [],
+                "symlinks": {},
+                "file_owners": {}
+            }
+        }"#;
+
+        let result: ScanResult = serde_json::from_str(json).expect("should deserialize old format");
+        assert_eq!(result.image, "old:v1");
+        assert_eq!(result.binaries.len(), 1);
+        assert_eq!(result.binaries[0].layer_index, None);
+        assert!(result.layer_history.is_empty());
+        assert!(result.labels.is_empty());
+        assert!(result.env_vars.is_empty());
     }
 }

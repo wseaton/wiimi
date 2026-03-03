@@ -4,6 +4,8 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>wiimi diff</title>
+<link rel="icon" type="image/svg+xml" href="/*FAVICON_HREF*/">
+<!--OG_META-->
 <style>
 /*BASE_STYLES*/
 
@@ -365,7 +367,17 @@ function renderBadges(tab) {
     var d = diffs[i];
     var renamed = d.renamed ? 'true' : 'false';
     html += '<tr class="' + statusClass(d.status) + '" data-status="' + d.status + '" data-renamed="' + renamed + '" data-path="' + escHtml(d.path.toLowerCase()) + '"' + (d.renamed ? ' style="display:none"' : '') + '>';
-    html += '<td>' + escHtml(d.path) + '</td>';
+    var layerBadge = '';
+    if (d.layer_before != null || d.layer_after != null) {
+      if (d.layer_before != null && d.layer_after != null) {
+        layerBadge = ' <span style="font-size:9px;color:var(--text-dim)" title="Layer">L' + d.layer_before + '\u2192L' + d.layer_after + '</span>';
+      } else if (d.layer_after != null) {
+        layerBadge = ' <span style="font-size:9px;color:var(--text-dim)" title="Layer">L' + d.layer_after + '</span>';
+      } else {
+        layerBadge = ' <span style="font-size:9px;color:var(--text-dim)" title="Layer">L' + d.layer_before + '</span>';
+      }
+    }
+    html += '<td>' + escHtml(d.path) + layerBadge + '</td>';
     if (hasPackage) html += '<td>' + (d.package ? escHtml(d.package) : '') + '</td>';
     var cubinDiff = smDiffHTML(d.cubins_before, d.cubins_after, 'cubin');
     var ptxDiff = smDiffHTML(d.ptx_before, d.ptx_after, 'ptx');

@@ -18,6 +18,16 @@ site-local: build
     cargo run -- site --config wiimi-site-local.toml --db local-scans.db
     open _site/index.html
 
+# Generate OG images only (useful for iterating on card design)
+og-images: build
+    cargo run -- discover --config wiimi-site-local.toml --db local-scans.db
+    cargo run -- site --config wiimi-site-local.toml --db local-scans.db
+    open _site/og/
+
+# Preview a single OG card (open first PNG found)
+og-preview: og-images
+    open $(find _site/og -name '*.png' | head -1)
+
 # Deploy _site/ to Cloudflare Pages (requires `wrangler` and CF auth)
 deploy:
     wrangler pages deploy _site --project-name=wiimi --branch=main

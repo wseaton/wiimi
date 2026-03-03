@@ -66,3 +66,9 @@ hex = "0.4"
 # Filesystem
 tempfile = "3"
 dirs = "6"
+
+# OG image rendering (SVG -> PNG)
+resvg = "0.44"
+
+# Base64 encoding (favicon data URIs)
+base64 = "0.22"

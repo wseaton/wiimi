@@ -4,6 +4,8 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>wiimi dependency graph</title>
+<link rel="icon" type="image/svg+xml" href="/*FAVICON_HREF*/">
+<!--OG_META-->
 <!--SCRIPTS-->
 <style>
 /*BASE_STYLES*/
@@ -603,10 +605,12 @@
     <div class="tabs">
       <div class="tab active" data-tab="profiles">Graph</div>
       <div class="tab" data-tab="list">All</div>
+      <div class="tab" data-tab="layers">Layers</div>
     </div>
     <input class="search-box" id="search" type="text" placeholder="Search binaries...">
     <div class="sidebar-body" id="profiles-panel"></div>
     <div class="sidebar-body hidden" id="list-panel"></div>
+    <div class="sidebar-body hidden" id="layers-panel"></div>
     <div class="detail-panel" id="detail"></div>
   </div>
   <div class="graph-area">
@@ -1264,6 +1268,59 @@ const DATA = /*GRAPH_DATA*/null;
     panel.appendChild(table);
   }
 
+  // ---- layers panel ----
+
+  function renderLayers() {
+    const panel = document.getElementById('layers-panel');
+    panel.innerHTML = '';
+    if (!DATA.layer_history || !DATA.layer_history.length) {
+      panel.innerHTML = '<div style="color:var(--text-dim);padding:8px;font-size:11px">No build history available</div>';
+      return;
+    }
+
+    // Count binaries per layer
+    const binsByLayer = {};
+    for (const b of DATA.binaries) {
+      if (b.layer_index != null) {
+        if (!binsByLayer[b.layer_index]) binsByLayer[b.layer_index] = [];
+        binsByLayer[b.layer_index].push(b.path);
+      }
+    }
+
+    for (const layer of DATA.layer_history) {
+      const div = document.createElement('div');
+      div.style.cssText = 'padding:4px 8px;border-bottom:1px solid var(--border);font-size:11px';
+      const binCount = (binsByLayer[layer.index] || []).length;
+      const cmd = layer.created_by || '(unknown)';
+      const truncCmd = cmd.length > 60 ? cmd.substring(0, 57) + '...' : cmd;
+
+      let header = '<div style="display:flex;justify-content:space-between;align-items:center;cursor:pointer" class="layer-header" data-layer="' + layer.index + '">';
+      header += '<span style="color:var(--text-bright)">L' + layer.index + '</span>';
+      if (binCount > 0) header += '<span style="color:var(--text-dim);font-size:9px">' + binCount + ' binaries</span>';
+      header += '</div>';
+      header += '<div style="color:var(--text-dim);font-size:10px;margin-top:2px" title="' + escHtml(cmd) + '">' + escHtml(truncCmd) + '</div>';
+
+      if (binCount > 0) {
+        header += '<div class="layer-bins" data-layer="' + layer.index + '" style="display:none;margin-top:4px;padding-left:8px">';
+        for (const p of binsByLayer[layer.index].sort()) {
+          header += '<div style="color:var(--text);font-size:10px">' + escHtml(p) + '</div>';
+        }
+        header += '</div>';
+      }
+
+      div.innerHTML = header;
+      panel.appendChild(div);
+    }
+
+    // Toggle binary list on header click
+    panel.querySelectorAll('.layer-header').forEach(h => {
+      h.addEventListener('click', () => {
+        const bins = panel.querySelector('.layer-bins[data-layer="' + h.dataset.layer + '"]');
+        if (bins) bins.style.display = bins.style.display === 'none' ? 'block' : 'none';
+      });
+    });
+  }
+
   // ---- detail panel ----
 
   function depLink(name) {
@@ -1287,6 +1344,12 @@ const DATA = /*GRAPH_DATA*/null;
     if (node.package) html += '<dt>Package</dt><dd>' + escHtml(node.package) + '</dd>';
     if (node.priority) html += '<dt>Type</dt><dd><span class="priority-badge ' + escHtml(node.priority) + '">' + escHtml(node.priority) + '</span></dd>';
     if (binInfo) html += '<dt>Status</dt><dd>' + (binInfo.reachable ? '<span style="color:var(--green)">reachable</span>' : '<span style="color:var(--text-dim)">dormant</span>') + '</dd>';
+    if (binInfo && binInfo.layer_index != null) {
+      const li = DATA.layer_history.find(l => l.index === binInfo.layer_index);
+      const cmd = li && li.created_by ? li.created_by : '';
+      const truncCmd = cmd.length > 80 ? cmd.substring(0, 77) + '...' : cmd;
+      html += '<dt>Layer</dt><dd title="' + escHtml(cmd) + '">L' + binInfo.layer_index + (truncCmd ? ': ' + escHtml(truncCmd) : '') + '</dd>';
+    }
     if (node.cubins.length || node.ptx.length) html += '<dt>Architectures</dt><dd>' + smChicletHTML(node.cubins, node.ptx) + '</dd>';
     if (binInfo && binInfo.rpath && binInfo.rpath.length) {
       html += '<dt><span class="path-label">RPATH</span> <span style="color:var(--red);font-size:9px">(deprecated)</span></dt>';
@@ -1723,6 +1786,7 @@ const DATA = /*GRAPH_DATA*/null;
       const target = tab.dataset.tab;
       document.getElementById('profiles-panel').classList.toggle('hidden', target !== 'profiles');
       document.getElementById('list-panel').classList.toggle('hidden', target !== 'list');
+      document.getElementById('layers-panel').classList.toggle('hidden', target !== 'layers');
     });
   });
 
@@ -2220,6 +2284,7 @@ const DATA = /*GRAPH_DATA*/null;
   renderHeader();
   renderProfiles();
   renderList();
+  renderLayers();
   renderInsights();
   renderEnvironment();
 })();

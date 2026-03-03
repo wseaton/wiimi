@@ -5,6 +5,7 @@ mod fatbin;
 mod html;
 mod image;
 mod nvidia;
+mod og;
 mod progress;
 mod registry;
 mod scan;
