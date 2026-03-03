@@ -1,45 +1,105 @@
 use std::fmt::Write as FmtWrite;
-use std::io::Read;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::io::{IsTerminal, Read};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
-use indicatif::{MultiProgress, ProgressBar, ProgressState, ProgressStyle};
+use indicatif::{HumanBytes, MultiProgress, ProgressBar, ProgressState, ProgressStyle};
+
+/// How scan progress is rendered.
+///
+///   TTY + visible  → animated progress bars (indicatif)
+///   non-TTY + visible → periodic `tracing::info!` lines (CI-friendly)
+///   !visible → silent (e.g. JSON output)
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ProgressMode {
+    Bars,
+    Interval,
+    Silent,
+}
 
 /// Shared progress state for the scan pipeline.
 ///
-/// Visual layout while running:
+/// Visual layout (TTY mode):
 ///   Layer  1/38  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━  done   42.1 MiB
 ///   Layer  3/38  ━━━━━━━━━━━╸────────────────────────  28%   7.1 GiB   23 MiB/s
 ///   Layer  4/38  ━━━━━━━━━━━━━━━━━━╸─────────────────  45%   892 MiB   41 MiB/s
 ///                ━━━━━━━━━━━━━━━━━━━━╸────────────────  52%   total
 ///   ⠋ 4281 binaries extracted, 312 with CUDA fatbins
+///
+/// Interval mode (CI):
+///   INFO scan progress image="ghcr.io/…:v0.5.0" elapsed=12s downloaded="2.1 GiB" …
 #[derive(Clone)]
 pub struct ScanProgress {
     multi: Arc<MultiProgress>,
     total: ProgressBar,
     summary: ProgressBar,
     num_layers: usize,
-    visible: bool,
+    mode: ProgressMode,
     extracted: Arc<AtomicU64>,
     scanned: Arc<AtomicU64>,
     cache_hits: Arc<AtomicU64>,
+    label: String,
+    start: Instant,
+    total_bytes: u64,
+    ticker_stop: Arc<AtomicBool>,
 }
 
+/// Interval between periodic log lines in CI mode.
+const TICKER_INTERVAL: Duration = Duration::from_secs(10);
+
 impl ScanProgress {
-    pub fn new(total_compressed_bytes: u64, num_layers: usize, visible: bool) -> Self {
-        if !visible {
-            return Self {
+    pub fn new(
+        total_compressed_bytes: u64,
+        num_layers: usize,
+        visible: bool,
+        label: String,
+    ) -> Self {
+        let mode = if !visible {
+            ProgressMode::Silent
+        } else if std::io::stderr().is_terminal() {
+            ProgressMode::Bars
+        } else {
+            ProgressMode::Interval
+        };
+
+        if mode != ProgressMode::Bars {
+            let total = ProgressBar::hidden();
+            total.set_length(total_compressed_bytes);
+
+            let sp = Self {
                 multi: Arc::new(MultiProgress::with_draw_target(
                     indicatif::ProgressDrawTarget::hidden(),
                 )),
-                total: ProgressBar::hidden(),
+                total,
                 summary: ProgressBar::hidden(),
                 num_layers,
-                visible: false,
+                mode,
                 extracted: Arc::new(AtomicU64::new(0)),
                 scanned: Arc::new(AtomicU64::new(0)),
                 cache_hits: Arc::new(AtomicU64::new(0)),
+                label,
+                start: Instant::now(),
+                total_bytes: total_compressed_bytes,
+                ticker_stop: Arc::new(AtomicBool::new(false)),
             };
+
+            if mode == ProgressMode::Interval {
+                let sp2 = sp.clone();
+                tokio::spawn(async move {
+                    let mut interval = tokio::time::interval(TICKER_INTERVAL);
+                    interval.tick().await; // skip the immediate first tick
+                    loop {
+                        interval.tick().await;
+                        if sp2.ticker_stop.load(Ordering::Relaxed) {
+                            break;
+                        }
+                        sp2.log_status();
+                    }
+                });
+            }
+
+            return sp;
         }
 
         let multi = MultiProgress::new();
@@ -68,16 +128,46 @@ impl ScanProgress {
             total,
             summary,
             num_layers,
-            visible,
+            mode,
             extracted: Arc::new(AtomicU64::new(0)),
             scanned: Arc::new(AtomicU64::new(0)),
             cache_hits: Arc::new(AtomicU64::new(0)),
+            label,
+            start: Instant::now(),
+            total_bytes: total_compressed_bytes,
+            ticker_stop: Arc::new(AtomicBool::new(false)),
         }
+    }
+
+    /// Emit a periodic status line via tracing (CI mode only).
+    fn log_status(&self) {
+        let elapsed = self.start.elapsed();
+        let downloaded = self.total.position();
+        let extracted = self.extracted.load(Ordering::Relaxed);
+        let scanned = self.scanned.load(Ordering::Relaxed);
+        let cached = self.cache_hits.load(Ordering::Relaxed);
+        let speed = if elapsed.as_secs() > 0 {
+            downloaded / elapsed.as_secs()
+        } else {
+            0
+        };
+
+        tracing::info!(
+            image = %self.label,
+            "{}s | {}/{} ({}/s) | {} extracted, {} scanned ({} cached)",
+            elapsed.as_secs(),
+            HumanBytes(downloaded),
+            HumanBytes(self.total_bytes),
+            HumanBytes(speed),
+            extracted,
+            scanned,
+            cached,
+        );
     }
 
     /// Create a per-layer progress bar, inserted above the total bar.
     pub fn add_layer(&self, layer_idx: usize, layer_size: u64) -> LayerProgress {
-        if !self.visible {
+        if self.mode != ProgressMode::Bars {
             return LayerProgress {
                 bar: ProgressBar::hidden(),
                 total: self.total.clone(),
@@ -125,6 +215,9 @@ impl ScanProgress {
     }
 
     fn refresh_summary(&self) {
+        if self.mode != ProgressMode::Bars {
+            return;
+        }
         let extracted = self.extracted.load(Ordering::Relaxed);
         let scanned = self.scanned.load(Ordering::Relaxed);
         let hits = self.cache_hits.load(Ordering::Relaxed);
@@ -160,6 +253,32 @@ impl ScanProgress {
 
     /// Mark all bars as finished and clear them from the terminal.
     pub fn finish(&self) {
+        self.ticker_stop.store(true, Ordering::Relaxed);
+
+        if self.mode == ProgressMode::Interval {
+            let elapsed = self.start.elapsed();
+            let downloaded = self.total.position();
+            let extracted = self.extracted.load(Ordering::Relaxed);
+            let scanned = self.scanned.load(Ordering::Relaxed);
+            let cached = self.cache_hits.load(Ordering::Relaxed);
+            let speed = if elapsed.as_secs() > 0 {
+                downloaded / elapsed.as_secs()
+            } else {
+                downloaded
+            };
+
+            tracing::info!(
+                image = %self.label,
+                "done in {}s | {} ({}/s) | {} extracted, {} scanned ({} cached)",
+                elapsed.as_secs(),
+                HumanBytes(downloaded),
+                HumanBytes(speed),
+                extracted,
+                scanned,
+                cached,
+            );
+        }
+
         self.total.finish_and_clear();
         self.summary.finish_and_clear();
     }

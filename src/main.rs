@@ -25,7 +25,7 @@ struct Cli {
     command: Command,
 
     /// Log level (trace, debug, info, warn, error)
-    #[arg(long, default_value = "warn", global = true)]
+    #[arg(long, default_value = "info", global = true)]
     log_level: String,
 }
 
@@ -213,7 +213,7 @@ async fn main() -> Result<()> {
                 let filename = format!("wiimi-{}.html", sanitize_filename(&image));
                 std::fs::write(&filename, &output)
                     .with_context(|| format!("failed to write HTML to {filename}"))?;
-                println!("HTML report written to: {filename}");
+                tracing::info!(path = %filename, "HTML report written");
                 if open {
                     open_file(&filename)?;
                 }
@@ -237,7 +237,7 @@ async fn main() -> Result<()> {
             let client = std::sync::Arc::new(discover::build_client(insecure_registry));
 
             for family in &site_config.families {
-                println!("Discovering: {}", family.name);
+                tracing::info!(family = %family.name, "discovering tags");
                 let summary = discover::discover_family(
                     family,
                     &store,
@@ -248,13 +248,13 @@ async fn main() -> Result<()> {
                     concurrency,
                 )
                 .await?;
-                println!(
-                    "  {}: {} matched, {} new, {} cached, {} ignored",
-                    summary.family_name,
-                    summary.matched,
-                    summary.new_scanned,
-                    summary.cached,
-                    summary.ignored,
+                tracing::info!(
+                    family = %summary.family_name,
+                    matched = summary.matched,
+                    new = summary.new_scanned,
+                    cached = summary.cached,
+                    ignored = summary.ignored,
+                    "discovery complete"
                 );
             }
         }
@@ -264,7 +264,7 @@ async fn main() -> Result<()> {
             let store = open_store(db.as_deref())?;
             site::generate_site(&site_config, &store)?;
             let index_path = format!("{}/index.html", site_config.output_dir);
-            println!("Site generated at: {}", site_config.output_dir);
+            tracing::info!(output = %site_config.output_dir, "site generated");
             if open {
                 open_file(&index_path)?;
             }
@@ -319,7 +319,7 @@ async fn main() -> Result<()> {
                 let filename = format!("wiimi-diff-{safe_from}-vs-{safe_to}.html");
                 std::fs::write(&filename, &output)
                     .with_context(|| format!("failed to write HTML to {filename}"))?;
-                println!("Diff report written to: {filename}");
+                tracing::info!(path = %filename, "diff report written");
                 if open {
                     open_file(&filename)?;
                 }

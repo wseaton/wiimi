@@ -116,7 +116,12 @@ pub async fn discover_family(
         });
     }
 
-    println!("  Scanning {total_to_scan} images with concurrency={concurrency}");
+    tracing::info!(
+        family = %family.name,
+        total = total_to_scan,
+        concurrency = concurrency,
+        "scanning images"
+    );
 
     // Own the dockerconfig bytes so they can be shared across spawned tasks.
     let dockerconfig_owned: Arc<Option<Vec<u8>>> = Arc::new(dockerconfig.map(|d| d.to_vec()));
@@ -133,7 +138,7 @@ pub async fn discover_family(
                 .acquire()
                 .await
                 .map_err(|e| anyhow::anyhow!("semaphore closed: {e}"))?;
-            println!("  [{}/{}] Scanning: {image}", idx + 1, total_to_scan);
+            tracing::info!(image = %image, progress = idx + 1, total = total_to_scan, "scanning");
             let result = scan::scan_image(
                 &image,
                 dc.as_deref(),

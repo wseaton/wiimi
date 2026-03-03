@@ -969,7 +969,12 @@ pub async fn scan_image(
         .map(|l| u64::try_from(l.size).unwrap_or(0))
         .sum();
 
-    let progress = ScanProgress::new(total_compressed, manifest.layers.len(), show_progress);
+    let progress = ScanProgress::new(
+        total_compressed,
+        manifest.layers.len(),
+        show_progress,
+        image_str.to_string(),
+    );
 
     let blob_cache = if use_blob_cache {
         match BlobCache::default_location() {
