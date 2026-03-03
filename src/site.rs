@@ -18,6 +18,10 @@ const INDEX_TEMPLATE: &str = include_str!("site_index_template.html");
 pub struct SiteConfig {
     pub title: String,
     pub output_dir: String,
+    /// Base URL for the deployed site (e.g. "https://wiimi.wseaton.com").
+    /// Used for absolute OG image URLs. No trailing slash.
+    #[serde(default)]
+    pub base_url: Option<String>,
     #[serde(rename = "family")]
     pub families: Vec<FamilyConfig>,
 }
@@ -158,7 +162,7 @@ pub fn generate_site(config: &SiteConfig, store: &ScanStore) -> Result<()> {
             let html = html::render_html(scan, style::BundleMode::Cdn);
             let html = inject_nav(&html, "../index.html");
             let meta = og::scan_og_meta(scan);
-            let html = inject_og_meta(&html, &meta, "../favicon.svg");
+            let html = inject_og_meta(&html, &meta, "../favicon.svg", config.base_url.as_deref());
             let slug = slug_for_image(&scan.image);
             let path = out.join("scan").join(format!("{slug}.html"));
             std::fs::write(&path, &html)
@@ -176,7 +180,7 @@ pub fn generate_site(config: &SiteConfig, store: &ScanStore) -> Result<()> {
             let html = diff::render_diff_html(&diff_result);
             let html = inject_nav(&html, "../index.html");
             let meta = og::diff_og_meta(&diff_result);
-            let html = inject_og_meta(&html, &meta, "../favicon.svg");
+            let html = inject_og_meta(&html, &meta, "../favicon.svg", config.base_url.as_deref());
 
             let from_slug = slug_for_image(&from.image);
             let to_slug = slug_for_image(&to.image);
@@ -218,7 +222,10 @@ pub fn generate_site(config: &SiteConfig, store: &ScanStore) -> Result<()> {
             "/*OG_DESCRIPTION*/",
             &html_attr_escape(&index_meta.description),
         )
-        .replace("/*OG_IMAGE*/", &index_meta.image_path)
+        .replace("/*OG_IMAGE*/", &match config.base_url.as_deref() {
+            Some(base) => format!("{}{}", base.trim_end_matches('/'), index_meta.image_path),
+            None => index_meta.image_path.clone(),
+        })
         .replace("/*OG_TYPE*/", &index_meta.og_type);
 
     std::fs::write(out.join("index.html"), &index_html).context("failed to write index.html")?;
@@ -227,7 +234,16 @@ pub fn generate_site(config: &SiteConfig, store: &ScanStore) -> Result<()> {
 }
 
 /// Inject OG meta tags and favicon href into a rendered scan/diff HTML page.
-fn inject_og_meta(html: &str, meta: &og::OgMeta, favicon_href: &str) -> String {
+fn inject_og_meta(
+    html: &str,
+    meta: &og::OgMeta,
+    favicon_href: &str,
+    base_url: Option<&str>,
+) -> String {
+    let image_url = match base_url {
+        Some(base) => format!("{}{}", base.trim_end_matches('/'), meta.image_path),
+        None => meta.image_path.clone(),
+    };
     let og_block = format!(
         concat!(
             "<meta name=\"description\" content=\"{desc}\">\n",
@@ -242,7 +258,7 @@ fn inject_og_meta(html: &str, meta: &og::OgMeta, favicon_href: &str) -> String {
         ),
         title = html_attr_escape(&meta.title),
         desc = html_attr_escape(&meta.description),
-        image = meta.image_path,
+        image = image_url,
         og_type = meta.og_type,
     );
     html.replace("<!--OG_META-->", &og_block)
@@ -719,6 +735,7 @@ tag_pattern = '^v\d+$'
         let config = SiteConfig {
             title: "Test".to_string(),
             output_dir: out_dir.to_string_lossy().to_string(),
+            base_url: None,
             families: vec![test_family(
                 "Test",
                 "ghcr.io",
@@ -756,6 +773,7 @@ tag_pattern = '^v\d+$'
         let config = SiteConfig {
             title: "Test".to_string(),
             output_dir: out_dir.to_string_lossy().to_string(),
+            base_url: None,
             families: vec![test_family(
                 "Empty",
                 "ghcr.io",
@@ -782,6 +800,7 @@ tag_pattern = '^v\d+$'
         let config = SiteConfig {
             title: "Nav Test".to_string(),
             output_dir: out_dir.to_string_lossy().to_string(),
+            base_url: None,
             families: vec![test_family("X", "ghcr.io", "test/x", r"^v\d+\.\d+\.\d+$")],
         };
 

@@ -342,6 +342,7 @@ mod tests {
         let config = crate::site::SiteConfig {
             title: "Test Catalog".to_string(),
             output_dir: "/tmp/test".to_string(),
+            base_url: None,
             families: vec![],
         };
         let png = crate::og::render_index_card(&config).unwrap();

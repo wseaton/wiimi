@@ -1,5 +1,6 @@
 title = "wiimi GPU Image Catalog"
 output_dir = "_site"
+base_url = "https://wiimi.wseaton.com"
 
 [[family]]
 name = "llm-d CUDA"
