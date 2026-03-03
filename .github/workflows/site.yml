@@ -43,6 +43,9 @@ jobs:
           key: scan-store-${{ hashFiles('wiimi-site.toml') }}-${{ github.run_number }}
           restore-keys: scan-store-${{ hashFiles('wiimi-site.toml') }}-
 
+      - name: Install fonts for OG card rendering
+        run: sudo apt-get install -y --no-install-recommends fonts-dejavu-core
+
       - name: Build wiimi
         run: cargo build --release
 
