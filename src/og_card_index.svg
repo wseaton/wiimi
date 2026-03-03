@@ -1,8 +1,8 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630">
   <rect width="1200" height="630" fill="#282828"/>
   <rect x="0" y="0" width="1200" height="6" fill="#d79921"/>
-  <text x="60" y="180" font-family="DejaVu Sans, sans-serif" font-size="48" font-weight="bold" fill="#ebdbb2">{{TITLE}}</text>
-  <text x="60" y="280" font-family="DejaVu Sans, sans-serif" font-size="30" fill="#a89984">{{DESCRIPTION}}</text>
+  <text x="60" y="180" font-family="Menlo, Liberation Mono, monospace" font-size="48" font-weight="bold" fill="#ebdbb2">{{TITLE}}</text>
+  <text x="60" y="280" font-family="Menlo, Liberation Mono, monospace" font-size="30" fill="#a89984">{{DESCRIPTION}}</text>
   <rect x="0" y="590" width="1200" height="40" fill="#1d2021"/>
-  <text x="60" y="618" font-family="DejaVu Sans, sans-serif" font-size="18" fill="#665c54">WTF Is In My Image</text>
+  <text x="60" y="618" font-family="Menlo, Liberation Mono, monospace" font-size="18" fill="#665c54">WTF Is In My Image</text>
 </svg>

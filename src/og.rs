@@ -14,18 +14,18 @@ const INDEX_TEMPLATE: &str = include_str!("og_card_index.svg");
 
 /// Render an SVG string to a PNG byte vector at 1200x630.
 fn render_svg_to_png(svg: &str) -> Result<Vec<u8>> {
-    let opts = resvg::usvg::Options::default();
+    let mut fontdb = resvg::usvg::fontdb::Database::new();
+    fontdb.load_system_fonts();
+
+    let mut opts = resvg::usvg::Options::default();
+    opts.fontdb = std::sync::Arc::new(fontdb);
     let tree =
         resvg::usvg::Tree::from_str(svg, &opts).context("failed to parse OG card SVG template")?;
 
     let mut pixmap = resvg::tiny_skia::Pixmap::new(1200, 630)
         .context("failed to create 1200x630 pixmap for OG card")?;
 
-    resvg::render(
-        &tree,
-        resvg::tiny_skia::Transform::default(),
-        &mut pixmap.as_mut(),
-    );
+    resvg::render(&tree, resvg::tiny_skia::Transform::default(), &mut pixmap.as_mut());
 
     pixmap.encode_png().context("failed to encode OG card PNG")
 }

@@ -1,10 +1,10 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630">
   <rect width="1200" height="630" fill="#282828"/>
   <rect x="0" y="0" width="1200" height="6" fill="#d79921"/>
-  <text x="60" y="100" font-family="DejaVu Sans, sans-serif" font-size="28" fill="#928374">wiimi diff</text>
-  <text x="60" y="200" font-family="DejaVu Sans Mono, monospace" font-size="36" font-weight="bold" fill="#ebdbb2">{{FROM_TO}}</text>
-  <text x="60" y="310" font-family="DejaVu Sans, sans-serif" font-size="28" fill="#b8bb26">{{BINARY_CHANGES}}</text>
-  <text x="60" y="380" font-family="DejaVu Sans, sans-serif" font-size="28" fill="#83a598">{{PACKAGE_CHANGES}}</text>
+  <text x="60" y="100" font-family="Menlo, Liberation Mono, monospace" font-size="28" fill="#928374">wiimi diff</text>
+  <text x="60" y="200" font-family="Menlo, Liberation Mono, monospace" font-size="36" font-weight="bold" fill="#ebdbb2">{{FROM_TO}}</text>
+  <text x="60" y="310" font-family="Menlo, Liberation Mono, monospace" font-size="28" fill="#b8bb26">{{BINARY_CHANGES}}</text>
+  <text x="60" y="380" font-family="Menlo, Liberation Mono, monospace" font-size="28" fill="#83a598">{{PACKAGE_CHANGES}}</text>
   <rect x="0" y="590" width="1200" height="40" fill="#1d2021"/>
-  <text x="60" y="618" font-family="DejaVu Sans, sans-serif" font-size="18" fill="#665c54">WTF Is In My Image</text>
+  <text x="60" y="618" font-family="Menlo, Liberation Mono, monospace" font-size="18" fill="#665c54">WTF Is In My Image</text>
 </svg>
