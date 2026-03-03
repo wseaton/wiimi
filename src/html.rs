@@ -4,7 +4,7 @@ use crate::diff::OgContext;
 use crate::scan::ScanResult;
 use crate::style::{self, BundleMode};
 
-const TEMPLATE: &str = include_str!("html_template.html");
+const TEMPLATE: &str = include_str!("templates/html_template.html");
 
 /// Compact binary entry for the HTML template (no DT_NEEDED, that's in the graph).
 #[derive(serde::Serialize)]

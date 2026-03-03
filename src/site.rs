@@ -11,7 +11,7 @@ use crate::scan::ScanResult;
 use crate::store::ScanStore;
 use crate::style;
 
-const INDEX_TEMPLATE: &str = include_str!("site_index_template.html");
+const INDEX_TEMPLATE: &str = include_str!("templates/site_index_template.html");
 
 /// Top-level site configuration, parsed from TOML.
 #[derive(Debug, Clone, Deserialize)]

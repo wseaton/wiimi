@@ -1,6 +1,6 @@
 /// Shared gruvbox CSS: variables, reset, body font, and masthead tabs.
 /// Both the scan and diff HTML templates inject this at `/*BASE_STYLES*/`.
-pub const BASE_CSS: &str = include_str!("base_style.css");
+pub const BASE_CSS: &str = include_str!("templates/base_style.css");
 
 /// Controls whether JS dependencies are inlined or loaded from a CDN.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

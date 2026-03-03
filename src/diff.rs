@@ -5,7 +5,7 @@ use crate::nvidia::ComputeCapability;
 use crate::scan::{BinaryScanResult, PackageVersion, PythonEnvironment, ScanResult};
 use crate::style;
 
-const DIFF_TEMPLATE: &str = include_str!("diff_template.html");
+const DIFF_TEMPLATE: &str = include_str!("templates/diff_template.html");
 
 // ---------------------------------------------------------------------------
 // Data model

@@ -7,11 +7,11 @@ use crate::diff::DiffResult;
 use crate::scan::ScanResult;
 use crate::site::{short_image_name, slug_for_image, SiteConfig};
 
-pub const FAVICON_SVG: &str = include_str!("favicon.svg");
+pub const FAVICON_SVG: &str = include_str!("templates/favicon.svg");
 
-const SCAN_TEMPLATE: &str = include_str!("og_card_scan.svg");
-const DIFF_TEMPLATE: &str = include_str!("og_card_diff.svg");
-const INDEX_TEMPLATE: &str = include_str!("og_card_index.svg");
+const SCAN_TEMPLATE: &str = include_str!("templates/og_card_scan.svg");
+const DIFF_TEMPLATE: &str = include_str!("templates/og_card_diff.svg");
+const INDEX_TEMPLATE: &str = include_str!("templates/og_card_index.svg");
 
 /// Build a minijinja environment for SVG templates with a custom `svg_escape` filter.
 pub(crate) fn svg_env() -> Environment<'static> {
