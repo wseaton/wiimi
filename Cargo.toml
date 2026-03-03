@@ -72,3 +72,6 @@ resvg = "0.44"
 
 # Base64 encoding (favicon data URIs)
 base64 = "0.22"
+
+# Templating
+minijinja = { version = "2", features = ["builtins"] }

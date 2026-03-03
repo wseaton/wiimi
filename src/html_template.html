@@ -4,11 +4,21 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>wiimi dependency graph</title>
-<link rel="icon" type="image/svg+xml" href="/*FAVICON_HREF*/">
-<!--OG_META-->
-<!--SCRIPTS-->
+<link rel="icon" type="image/svg+xml" href="{{ favicon_href }}">
+{% if og %}
+<meta name="description" content="{{ og.description }}">
+<meta property="og:title" content="{{ og.title }}">
+<meta property="og:description" content="{{ og.description }}">
+<meta property="og:image" content="{{ og.image_url }}">
+<meta property="og:type" content="{{ og.og_type }}">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="{{ og.title }}">
+<meta name="twitter:description" content="{{ og.description }}">
+<meta name="twitter:image" content="{{ og.image_url }}">
+{% endif %}
+{{ scripts|safe }}
 <style>
-/*BASE_STYLES*/
+{{ base_css|safe }}
 
 .layout {
   display: flex;
@@ -595,6 +605,7 @@
 <body>
 
 <div class="masthead">
+  {% if nav_html %}{{ nav_html|safe }}{% endif %}
   <div class="masthead-tab active" data-view="graph">Graph</div>
   <div class="masthead-tab" data-view="environment">Environment</div>
   <div class="masthead-tab" data-view="insights">Insights</div>
@@ -641,7 +652,7 @@
 <div class="insights-page" id="environment-page"></div>
 
 <script>
-const DATA = /*GRAPH_DATA*/null;
+const DATA = {{ graph_data|safe }};
 
 (function() {
   if (!DATA) return;

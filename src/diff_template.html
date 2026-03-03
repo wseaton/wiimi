@@ -4,10 +4,20 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>wiimi diff</title>
-<link rel="icon" type="image/svg+xml" href="/*FAVICON_HREF*/">
-<!--OG_META-->
+<link rel="icon" type="image/svg+xml" href="{{ favicon_href }}">
+{% if og %}
+<meta name="description" content="{{ og.description }}">
+<meta property="og:title" content="{{ og.title }}">
+<meta property="og:description" content="{{ og.description }}">
+<meta property="og:image" content="{{ og.image_url }}">
+<meta property="og:type" content="{{ og.og_type }}">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="{{ og.title }}">
+<meta name="twitter:description" content="{{ og.description }}">
+<meta name="twitter:image" content="{{ og.image_url }}">
+{% endif %}
 <style>
-/*BASE_STYLES*/
+{{ base_css|safe }}
 
 :root {
   --green-bg: #e6ecc7;
@@ -185,6 +195,7 @@ tr:hover { filter: brightness(0.97); }
 <body>
 
 <div class="masthead">
+  {% if nav_html %}{{ nav_html|safe }}{% endif %}
   <div class="masthead-tab active" data-tab="sm">CUDA</div>
   <div class="masthead-tab" data-tab="python">Python Packages</div>
   <div class="masthead-tab" data-tab="system">System Packages</div>
@@ -240,7 +251,7 @@ tr:hover { filter: brightness(0.97); }
 </div>
 
 <script>
-const DATA = /*DIFF_DATA*/null;
+const DATA = {{ diff_data|safe }};
 
 function escHtml(s) {
   return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');

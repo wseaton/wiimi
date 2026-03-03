@@ -103,6 +103,48 @@ struct FamilyData {
     diff_urls: std::collections::HashMap<String, String>,
 }
 
+/// Data for a single scan row in the index page template.
+#[derive(serde::Serialize)]
+struct IndexScanRow {
+    image: String,
+    slug: String,
+    short_name: String,
+    cuda: String,
+    cc_range: String,
+    ptx_class: &'static str,
+    ptx_label: &'static str,
+    bin_count: usize,
+}
+
+/// Data for a single family section in the index page template.
+#[derive(serde::Serialize)]
+struct IndexFamily {
+    idx: usize,
+    name: String,
+    scans: Vec<IndexScanRow>,
+}
+
+/// Build the nav link HTML for site-generated pages.
+fn nav_link_html(index_url: &str) -> String {
+    format!(
+        r#"<a href="{index_url}" style="display:flex;align-items:center;padding:0 16px;color:var(--accent);text-decoration:none;font-size:0.85rem;border-right:1px solid var(--border);">&larr; Catalog</a>"#
+    )
+}
+
+/// Build an `OgContext` from `OgMeta`, resolving the image URL with the base URL.
+fn og_context(meta: &og::OgMeta, base_url: Option<&str>) -> diff::OgContext {
+    let image_url = match base_url {
+        Some(base) => format!("{}{}", base.trim_end_matches('/'), meta.image_path),
+        None => meta.image_path.clone(),
+    };
+    diff::OgContext {
+        title: meta.title.clone(),
+        description: meta.description.clone(),
+        image_url,
+        og_type: meta.og_type.clone(),
+    }
+}
+
 /// Resolve scans belonging to a family by querying the store by prefix,
 /// filtering tags against the family's pattern, sorting by the configured
 /// order, and truncating to `last_n` if set.
@@ -144,10 +186,12 @@ pub fn generate_site(config: &SiteConfig, store: &ScanStore) -> Result<()> {
     std::fs::write(out.join("favicon.svg"), og::FAVICON_SVG)
         .context("failed to write favicon.svg")?;
 
+    let nav = nav_link_html("../index.html");
+
     let mut site_data = SiteData {
         families: Vec::new(),
     };
-    let mut family_sections_html = String::new();
+    let mut index_families: Vec<IndexFamily> = Vec::new();
     let mut og_data: Vec<og::FamilyOgData> = Vec::new();
 
     for (family_idx, family) in config.families.iter().enumerate() {
@@ -159,10 +203,15 @@ pub fn generate_site(config: &SiteConfig, store: &ScanStore) -> Result<()> {
 
         // Generate individual scan pages with OG meta tags
         for scan in &scans {
-            let html = html::render_html(scan, style::BundleMode::Cdn);
-            let html = inject_nav(&html, "../index.html");
             let meta = og::scan_og_meta(scan);
-            let html = inject_og_meta(&html, &meta, "../favicon.svg", config.base_url.as_deref());
+            let og_ctx = og_context(&meta, config.base_url.as_deref());
+            let html = html::render_html_with_og(
+                scan,
+                style::BundleMode::Cdn,
+                Some(&og_ctx),
+                "../favicon.svg",
+                &nav,
+            );
             let slug = slug_for_image(&scan.image);
             let path = out.join("scan").join(format!("{slug}.html"));
             std::fs::write(&path, &html)
@@ -177,10 +226,10 @@ pub fn generate_site(config: &SiteConfig, store: &ScanStore) -> Result<()> {
             let from = &scans[*i];
             let to = &scans[*j];
             let diff_result = diff::compute_diff(from, to);
-            let html = diff::render_diff_html(&diff_result);
-            let html = inject_nav(&html, "../index.html");
             let meta = og::diff_og_meta(&diff_result);
-            let html = inject_og_meta(&html, &meta, "../favicon.svg", config.base_url.as_deref());
+            let og_ctx = og_context(&meta, config.base_url.as_deref());
+            let html =
+                diff::render_diff_html_with_og(&diff_result, Some(&og_ctx), "../favicon.svg", &nav);
 
             let from_slug = slug_for_image(&from.image);
             let to_slug = slug_for_image(&to.image);
@@ -199,8 +248,45 @@ pub fn generate_site(config: &SiteConfig, store: &ScanStore) -> Result<()> {
             diff_urls,
         });
 
-        // Build the HTML section for this family
-        family_sections_html.push_str(&render_family_section(family_idx, family, &scans));
+        // Build index family data for the template
+        let scan_rows: Vec<IndexScanRow> = scans
+            .iter()
+            .map(|scan| {
+                let cc_range = match (&scan.effective_cc_min, &scan.effective_cc_max) {
+                    (Some(min), Some(max)) => format!("{min} - {max}"),
+                    _ => "-".to_string(),
+                };
+                IndexScanRow {
+                    image: scan.image.clone(),
+                    slug: slug_for_image(&scan.image),
+                    short_name: short_image_name(&scan.image),
+                    cuda: scan
+                        .metadata
+                        .cuda_version
+                        .as_deref()
+                        .unwrap_or("-")
+                        .to_string(),
+                    cc_range,
+                    ptx_class: if scan.has_ptx_forward_compat {
+                        "ptx-yes"
+                    } else {
+                        "ptx-no"
+                    },
+                    ptx_label: if scan.has_ptx_forward_compat {
+                        "Yes"
+                    } else {
+                        "No"
+                    },
+                    bin_count: scan.binaries.len(),
+                }
+            })
+            .collect();
+
+        index_families.push(IndexFamily {
+            idx: family_idx,
+            name: family.name.clone(),
+            scans: scan_rows,
+        });
 
         og_data.push((scans, pairs));
     }
@@ -211,66 +297,34 @@ pub fn generate_site(config: &SiteConfig, store: &ScanStore) -> Result<()> {
     // Render index page with OG meta
     let site_json = serde_json::to_string(&site_data).context("failed to serialize site data")?;
     let index_meta = og::index_og_meta(config);
+    let og_image_url = match config.base_url.as_deref() {
+        Some(base) => format!("{}{}", base.trim_end_matches('/'), index_meta.image_path),
+        None => index_meta.image_path.clone(),
+    };
 
-    let index_html = INDEX_TEMPLATE
-        .replace("/*BASE_STYLES*/", style::BASE_CSS)
-        .replace("/*SITE_TITLE*/", &config.title)
-        .replace("/*FAMILY_SECTIONS*/", &family_sections_html)
-        .replace("/*SITE_DATA*/null", &site_json)
-        .replace("/*OG_TITLE*/", &html_attr_escape(&index_meta.title))
-        .replace(
-            "/*OG_DESCRIPTION*/",
-            &html_attr_escape(&index_meta.description),
-        )
-        .replace("/*OG_IMAGE*/", &match config.base_url.as_deref() {
-            Some(base) => format!("{}{}", base.trim_end_matches('/'), index_meta.image_path),
-            None => index_meta.image_path.clone(),
+    let mut env = minijinja::Environment::new();
+    env.set_auto_escape_callback(|_| minijinja::AutoEscape::Html);
+    env.add_template("index", INDEX_TEMPLATE)
+        .expect("index HTML template is valid");
+    let tmpl = env
+        .get_template("index")
+        .expect("index template registered");
+    let index_html = tmpl
+        .render(minijinja::context! {
+            base_css => style::BASE_CSS,
+            site_title => config.title,
+            families => index_families,
+            site_data => site_json,
+            og_title => index_meta.title,
+            og_description => index_meta.description,
+            og_image => og_image_url,
+            og_type => index_meta.og_type,
         })
-        .replace("/*OG_TYPE*/", &index_meta.og_type);
+        .context("failed to render index template")?;
 
     std::fs::write(out.join("index.html"), &index_html).context("failed to write index.html")?;
 
     Ok(())
-}
-
-/// Inject OG meta tags and favicon href into a rendered scan/diff HTML page.
-fn inject_og_meta(
-    html: &str,
-    meta: &og::OgMeta,
-    favicon_href: &str,
-    base_url: Option<&str>,
-) -> String {
-    let image_url = match base_url {
-        Some(base) => format!("{}{}", base.trim_end_matches('/'), meta.image_path),
-        None => meta.image_path.clone(),
-    };
-    let og_block = format!(
-        concat!(
-            "<meta name=\"description\" content=\"{desc}\">\n",
-            "<meta property=\"og:title\" content=\"{title}\">\n",
-            "<meta property=\"og:description\" content=\"{desc}\">\n",
-            "<meta property=\"og:image\" content=\"{image}\">\n",
-            "<meta property=\"og:type\" content=\"{og_type}\">\n",
-            "<meta name=\"twitter:card\" content=\"summary_large_image\">\n",
-            "<meta name=\"twitter:title\" content=\"{title}\">\n",
-            "<meta name=\"twitter:description\" content=\"{desc}\">\n",
-            "<meta name=\"twitter:image\" content=\"{image}\">",
-        ),
-        title = html_attr_escape(&meta.title),
-        desc = html_attr_escape(&meta.description),
-        image = image_url,
-        og_type = meta.og_type,
-    );
-    html.replace("<!--OG_META-->", &og_block)
-        .replace("/*FAVICON_HREF*/", favicon_href)
-}
-
-/// Escape text for use in HTML attribute values.
-fn html_attr_escape(s: &str) -> String {
-    s.replace('&', "&amp;")
-        .replace('"', "&quot;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
 }
 
 /// All (i, j) pairs where i < j, for N-choose-2 diff computation.
@@ -287,120 +341,6 @@ fn all_pairs(n: usize) -> Vec<(usize, usize)> {
 /// Turn an image reference into a filesystem-safe slug.
 pub fn slug_for_image(image: &str) -> String {
     crate::sanitize_filename(image)
-}
-
-/// Inject a "Back to Catalog" link into the masthead of a rendered HTML page.
-fn inject_nav(html: &str, index_url: &str) -> String {
-    let nav_link = format!(
-        r#"<a href="{index_url}" style="display:flex;align-items:center;padding:0 16px;color:var(--accent);text-decoration:none;font-size:0.85rem;border-right:1px solid var(--border);">&larr; Catalog</a>"#
-    );
-    html.replace(
-        r#"<div class="masthead">"#,
-        &format!(r#"<div class="masthead">{nav_link}"#),
-    )
-}
-
-/// Render the HTML for a single family section on the index page.
-fn render_family_section(
-    family_idx: usize,
-    family: &FamilyConfig,
-    scans: &[crate::scan::ScanResult],
-) -> String {
-    let mut html = format!(
-        r#"<div class="family-section" data-family-idx="{family_idx}">
-  <h2 class="family-name">{}</h2>
-  <table class="scan-table">
-    <thead>
-      <tr>
-        <th>Image</th>
-        <th>CUDA</th>
-        <th>SM Range</th>
-        <th>PTX</th>
-        <th>Binaries</th>
-      </tr>
-    </thead>
-    <tbody>
-"#,
-        family.name
-    );
-
-    for scan in scans {
-        let slug = slug_for_image(&scan.image);
-        let cuda = scan.metadata.cuda_version.as_deref().unwrap_or("-");
-        let cc_range = match (&scan.effective_cc_min, &scan.effective_cc_max) {
-            (Some(min), Some(max)) => format!("{min} - {max}"),
-            _ => "-".to_string(),
-        };
-        let ptx_class = if scan.has_ptx_forward_compat {
-            "ptx-yes"
-        } else {
-            "ptx-no"
-        };
-        let ptx_label = if scan.has_ptx_forward_compat {
-            "Yes"
-        } else {
-            "No"
-        };
-        let bin_count = scan.binaries.len();
-        let short_name = short_image_name(&scan.image);
-
-        html.push_str(&format!(
-            r#"      <tr>
-        <td><a href="scan/{slug}.html">{short_name}</a></td>
-        <td>{cuda}</td>
-        <td>{cc_range}</td>
-        <td class="{ptx_class}">{ptx_label}</td>
-        <td>{bin_count}</td>
-      </tr>
-"#
-        ));
-    }
-
-    html.push_str("    </tbody>\n  </table>\n");
-
-    // Diff dropdown controls
-    html.push_str(
-        r#"  <div class="diff-controls">
-    <label>Compare:</label>
-    <select class="diff-from">
-      <option value="">From...</option>
-"#,
-    );
-
-    for scan in scans {
-        let short = short_image_name(&scan.image);
-        html.push_str(&format!(
-            r#"      <option value="{}">{short}</option>
-"#,
-            scan.image
-        ));
-    }
-
-    html.push_str(
-        r#"    </select>
-    <select class="diff-to">
-      <option value="">To...</option>
-"#,
-    );
-
-    for scan in scans {
-        let short = short_image_name(&scan.image);
-        html.push_str(&format!(
-            r#"      <option value="{}">{short}</option>
-"#,
-            scan.image
-        ));
-    }
-
-    html.push_str(
-        r#"    </select>
-    <button class="diff-go-btn" disabled>View Diff</button>
-  </div>
-</div>
-"#,
-    );
-
-    html
 }
 
 /// Shorten an image reference to just the tag or last meaningful segment.
@@ -421,8 +361,7 @@ mod tests {
     use crate::nvidia::ComputeCapability;
     use crate::scan::{BinaryScanResult, EnvironmentInfo, ImageMetadata, ScanResult};
     use crate::site::{
-        all_pairs, inject_nav, resolve_family_scans, short_image_name, slug_for_image,
-        FamilyConfig, SiteConfig,
+        all_pairs, resolve_family_scans, short_image_name, slug_for_image, FamilyConfig, SiteConfig,
     };
     use crate::store::ScanStore;
 
@@ -713,12 +652,10 @@ tag_pattern = '^v\d+$'
     }
 
     #[test]
-    fn nav_injection() {
-        let html = r#"<body><div class="masthead"><div class="tab">Tab</div></div></body>"#;
-        let result = inject_nav(html, "../index.html");
-        assert!(result.contains("Catalog"));
-        assert!(result.contains("../index.html"));
-        assert!(result.contains(r#"<div class="masthead">"#));
+    fn nav_link_html_contains_catalog() {
+        let html = crate::site::nav_link_html("../index.html");
+        assert!(html.contains("Catalog"));
+        assert!(html.contains("../index.html"));
     }
 
     #[test]

@@ -1,6 +1,7 @@
 use std::path::Path;
 
 use anyhow::{Context, Result};
+use minijinja::Environment;
 
 use crate::diff::DiffResult;
 use crate::scan::ScanResult;
@@ -12,34 +13,50 @@ const SCAN_TEMPLATE: &str = include_str!("og_card_scan.svg");
 const DIFF_TEMPLATE: &str = include_str!("og_card_diff.svg");
 const INDEX_TEMPLATE: &str = include_str!("og_card_index.svg");
 
+/// Build a minijinja environment for SVG templates with a custom `svg_escape` filter.
+pub(crate) fn svg_env() -> Environment<'static> {
+    let mut env = Environment::new();
+    env.set_auto_escape_callback(|_| minijinja::AutoEscape::None);
+    env.add_filter("svg_escape", |v: String| -> String {
+        v.replace('&', "&amp;")
+            .replace('<', "&lt;")
+            .replace('>', "&gt;")
+    });
+    env.add_template("scan", SCAN_TEMPLATE)
+        .expect("scan SVG template is valid");
+    env.add_template("diff", DIFF_TEMPLATE)
+        .expect("diff SVG template is valid");
+    env.add_template("index", INDEX_TEMPLATE)
+        .expect("index SVG template is valid");
+    env
+}
+
 /// Render an SVG string to a PNG byte vector at 1200x630.
 fn render_svg_to_png(svg: &str) -> Result<Vec<u8>> {
     let mut fontdb = resvg::usvg::fontdb::Database::new();
     fontdb.load_system_fonts();
 
-    let mut opts = resvg::usvg::Options::default();
-    opts.fontdb = std::sync::Arc::new(fontdb);
+    let opts = resvg::usvg::Options {
+        fontdb: std::sync::Arc::new(fontdb),
+        ..Default::default()
+    };
     let tree =
         resvg::usvg::Tree::from_str(svg, &opts).context("failed to parse OG card SVG template")?;
 
     let mut pixmap = resvg::tiny_skia::Pixmap::new(1200, 630)
         .context("failed to create 1200x630 pixmap for OG card")?;
 
-    resvg::render(&tree, resvg::tiny_skia::Transform::default(), &mut pixmap.as_mut());
+    resvg::render(
+        &tree,
+        resvg::tiny_skia::Transform::default(),
+        &mut pixmap.as_mut(),
+    );
 
     pixmap.encode_png().context("failed to encode OG card PNG")
 }
 
-/// Escape text for embedding inside SVG text elements (handles &, <, >).
-fn svg_escape(s: &str) -> String {
-    s.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-}
-
 /// Generate an OG card PNG for a scan result.
 pub fn render_scan_card(scan: &ScanResult) -> Result<Vec<u8>> {
-    let image_display = svg_escape(&scan.image);
     let cuda = scan.metadata.cuda_version.as_deref().unwrap_or("unknown");
 
     let sm_range = match (&scan.effective_cc_min, &scan.effective_cc_max) {
@@ -67,18 +84,25 @@ pub fn render_scan_card(scan: &ScanResult) -> Result<Vec<u8>> {
         scan.dormant_count
     );
 
-    let svg = SCAN_TEMPLATE
-        .replace("{{IMAGE}}", &image_display)
-        .replace("{{DETAILS}}", &svg_escape(&details))
-        .replace("{{BINARIES}}", &svg_escape(&binaries));
+    let env = svg_env();
+    let tmpl = env
+        .get_template("scan")
+        .context("missing scan SVG template")?;
+    let svg = tmpl
+        .render(minijinja::context! {
+            image => scan.image,
+            details => details,
+            binaries => binaries,
+        })
+        .context("failed to render scan OG card SVG")?;
 
     render_svg_to_png(&svg)
 }
 
 /// Generate an OG card PNG for a diff result.
 pub fn render_diff_card(diff: &DiffResult) -> Result<Vec<u8>> {
-    let from_short = svg_escape(&short_image_name(&diff.from));
-    let to_short = svg_escape(&short_image_name(&diff.to));
+    let from_short = short_image_name(&diff.from);
+    let to_short = short_image_name(&diff.to);
     let from_to = format!("{from_short}  \u{2192}  {to_short}");
 
     let s = &diff.summary;
@@ -114,10 +138,17 @@ pub fn render_diff_card(diff: &DiffResult) -> Result<Vec<u8>> {
         pkg_parts.join("  ")
     };
 
-    let svg = DIFF_TEMPLATE
-        .replace("{{FROM_TO}}", &svg_escape(&from_to))
-        .replace("{{BINARY_CHANGES}}", &svg_escape(&binary_changes))
-        .replace("{{PACKAGE_CHANGES}}", &svg_escape(&package_changes));
+    let env = svg_env();
+    let tmpl = env
+        .get_template("diff")
+        .context("missing diff SVG template")?;
+    let svg = tmpl
+        .render(minijinja::context! {
+            from_to => from_to,
+            binary_changes => binary_changes,
+            package_changes => package_changes,
+        })
+        .context("failed to render diff OG card SVG")?;
 
     render_svg_to_png(&svg)
 }
@@ -134,9 +165,16 @@ pub fn render_index_card(config: &SiteConfig) -> Result<Vec<u8>> {
         }
     );
 
-    let svg = INDEX_TEMPLATE
-        .replace("{{TITLE}}", &svg_escape(&config.title))
-        .replace("{{DESCRIPTION}}", &svg_escape(&description));
+    let env = svg_env();
+    let tmpl = env
+        .get_template("index")
+        .context("missing index SVG template")?;
+    let svg = tmpl
+        .render(minijinja::context! {
+            title => config.title,
+            description => description,
+        })
+        .context("failed to render index OG card SVG")?;
 
     render_svg_to_png(&svg)
 }
@@ -350,9 +388,22 @@ mod tests {
     }
 
     #[test]
-    fn svg_escape_handles_special_chars() {
-        assert_eq!(crate::og::svg_escape("a & b"), "a &amp; b");
-        assert_eq!(crate::og::svg_escape("a < b > c"), "a &lt; b &gt; c");
+    fn svg_escape_filter_handles_special_chars() {
+        let env = crate::og::svg_env();
+        let mut test_env = env;
+        test_env
+            .add_template("test", "{{ val|svg_escape }}")
+            .unwrap();
+        let tmpl = test_env.get_template("test").unwrap();
+        assert_eq!(
+            tmpl.render(minijinja::context! { val => "a & b" }).unwrap(),
+            "a &amp; b"
+        );
+        assert_eq!(
+            tmpl.render(minijinja::context! { val => "a < b > c" })
+                .unwrap(),
+            "a &lt; b &gt; c"
+        );
     }
 
     #[test]

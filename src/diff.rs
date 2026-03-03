@@ -516,11 +516,43 @@ pub fn compute_diff(from: &ScanResult, to: &ScanResult) -> DiffResult {
 // HTML rendering
 // ---------------------------------------------------------------------------
 
+/// Context for OG meta tag injection.
+pub struct OgContext {
+    pub title: String,
+    pub description: String,
+    pub image_url: String,
+    pub og_type: String,
+}
+
 pub fn render_diff_html(diff: &DiffResult) -> String {
+    render_diff_html_with_og(diff, None, "", "")
+}
+
+pub fn render_diff_html_with_og(
+    diff: &DiffResult,
+    og: Option<&OgContext>,
+    favicon_href: &str,
+    nav_html: &str,
+) -> String {
     let json = serde_json::to_string(diff).unwrap_or_else(|e| format!("{{\"error\": \"{e}\"}}"));
-    DIFF_TEMPLATE
-        .replace("/*BASE_STYLES*/", style::BASE_CSS)
-        .replace("/*DIFF_DATA*/null", &json)
+    let mut env = minijinja::Environment::new();
+    env.set_auto_escape_callback(|_| minijinja::AutoEscape::Html);
+    env.add_template("diff", DIFF_TEMPLATE)
+        .expect("diff HTML template is valid");
+    let tmpl = env.get_template("diff").expect("diff template registered");
+    tmpl.render(minijinja::context! {
+        base_css => style::BASE_CSS,
+        diff_data => json,
+        favicon_href => if favicon_href.is_empty() { "" } else { favicon_href },
+        og => og.map(|o| minijinja::context! {
+            title => o.title.clone(),
+            description => o.description.clone(),
+            image_url => o.image_url.clone(),
+            og_type => o.og_type.clone(),
+        }),
+        nav_html => nav_html,
+    })
+    .expect("diff template renders")
 }
 
 // ---------------------------------------------------------------------------

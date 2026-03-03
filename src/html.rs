@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 
+use crate::diff::OgContext;
 use crate::scan::ScanResult;
 use crate::style::{self, BundleMode};
 
@@ -55,6 +56,16 @@ struct HtmlData<'a> {
 /// `bundle` controls whether JS dependencies are inlined (`SelfContained`)
 /// or loaded from a CDN (`Cdn`).
 pub fn render_html(result: &ScanResult, bundle: BundleMode) -> String {
+    render_html_with_og(result, bundle, None, "", "")
+}
+
+pub fn render_html_with_og(
+    result: &ScanResult,
+    bundle: BundleMode,
+    og: Option<&OgContext>,
+    favicon_href: &str,
+    nav_html: &str,
+) -> String {
     let reachable_paths: std::collections::HashSet<&str> = result
         .dep_graph
         .as_ref()
@@ -120,10 +131,25 @@ pub fn render_html(result: &ScanResult, bundle: BundleMode) -> String {
 
     let json = serde_json::to_string(&data).unwrap_or_else(|e| format!("{{\"error\": \"{e}\"}}"));
 
-    TEMPLATE
-        .replace("<!--SCRIPTS-->", &style::script_block(bundle))
-        .replace("/*BASE_STYLES*/", style::BASE_CSS)
-        .replace("/*GRAPH_DATA*/null", &json)
+    let mut env = minijinja::Environment::new();
+    env.set_auto_escape_callback(|_| minijinja::AutoEscape::Html);
+    env.add_template("html", TEMPLATE)
+        .expect("HTML template is valid");
+    let tmpl = env.get_template("html").expect("html template registered");
+    tmpl.render(minijinja::context! {
+        base_css => style::BASE_CSS,
+        scripts => style::script_block(bundle),
+        graph_data => json,
+        favicon_href => if favicon_href.is_empty() { "" } else { favicon_href },
+        og => og.map(|o| minijinja::context! {
+            title => o.title.clone(),
+            description => o.description.clone(),
+            image_url => o.image_url.clone(),
+            og_type => o.og_type.clone(),
+        }),
+        nav_html => nav_html,
+    })
+    .expect("html template renders")
 }
 
 /// Compute the global SM range (min, max) across all binaries for consistent bar rendering.
