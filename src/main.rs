@@ -211,6 +211,7 @@ async fn main() -> Result<()> {
                     style::BundleMode::SelfContained
                 };
                 let output = html::render_html(&result, bundle);
+                let output = strip_og_placeholders(&output);
                 let filename = format!("wiimi-{}.html", sanitize_filename(&image));
                 std::fs::write(&filename, &output)
                     .with_context(|| format!("failed to write HTML to {filename}"))?;
@@ -315,6 +316,7 @@ async fn main() -> Result<()> {
                 println!("{output}");
             } else {
                 let output = diff::render_diff_html(&diff_result);
+                let output = strip_og_placeholders(&output);
                 let safe_from = sanitize_filename(&from);
                 let safe_to = sanitize_filename(&to);
                 let filename = format!("wiimi-diff-{safe_from}-vs-{safe_to}.html");
@@ -387,6 +389,17 @@ pub(crate) fn sanitize_filename(s: &str) -> String {
             }
         })
         .collect()
+}
+
+/// Replace favicon/OG placeholders with a data-URI favicon and empty OG block
+/// for standalone (non-site) HTML output.
+fn strip_og_placeholders(html: &str) -> String {
+    let favicon_data_uri = format!(
+        "data:image/svg+xml;base64,{}",
+        style::base64_encode(og::FAVICON_SVG.as_bytes())
+    );
+    html.replace("/*FAVICON_HREF*/", &favicon_data_uri)
+        .replace("<!--OG_META-->", "")
 }
 
 /// Open a file with the platform's default handler.

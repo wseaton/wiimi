@@ -518,15 +518,9 @@ pub fn compute_diff(from: &ScanResult, to: &ScanResult) -> DiffResult {
 
 pub fn render_diff_html(diff: &DiffResult) -> String {
     let json = serde_json::to_string(diff).unwrap_or_else(|e| format!("{{\"error\": \"{e}\"}}"));
-    let favicon_data_uri = format!(
-        "data:image/svg+xml;base64,{}",
-        crate::style::base64_encode(crate::og::FAVICON_SVG.as_bytes())
-    );
     DIFF_TEMPLATE
         .replace("/*BASE_STYLES*/", style::BASE_CSS)
         .replace("/*DIFF_DATA*/null", &json)
-        .replace("/*FAVICON_HREF*/", &favicon_data_uri)
-        .replace("<!--OG_META-->", "")
 }
 
 // ---------------------------------------------------------------------------

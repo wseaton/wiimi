@@ -120,17 +120,10 @@ pub fn render_html(result: &ScanResult, bundle: BundleMode) -> String {
 
     let json = serde_json::to_string(&data).unwrap_or_else(|e| format!("{{\"error\": \"{e}\"}}"));
 
-    let favicon_data_uri = format!(
-        "data:image/svg+xml;base64,{}",
-        crate::style::base64_encode(crate::og::FAVICON_SVG.as_bytes())
-    );
-
     TEMPLATE
         .replace("<!--SCRIPTS-->", &style::script_block(bundle))
         .replace("/*BASE_STYLES*/", style::BASE_CSS)
         .replace("/*GRAPH_DATA*/null", &json)
-        .replace("/*FAVICON_HREF*/", &favicon_data_uri)
-        .replace("<!--OG_META-->", "")
 }
 
 /// Compute the global SM range (min, max) across all binaries for consistent bar rendering.
