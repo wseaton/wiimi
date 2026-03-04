@@ -77,15 +77,27 @@ pub async fn discover_family(
         .map(|t| t.as_str())
         .collect();
 
-    // For lexicographic ordering, we can pre-filter to last_n before scanning.
-    // For scan_time ordering, we need to scan everything and let site generation
-    // handle truncation (we don't know timestamps until after scanning).
-    if family.order_by == TagOrder::Lexicographic {
-        matched_tags.sort();
-        if let Some(n) = family.last_n {
-            let start = matched_tags.len().saturating_sub(n);
-            matched_tags = matched_tags.split_off(start);
+    // For lexicographic/numeric ordering, we can pre-filter to last_n before
+    // scanning. For scan_time ordering, we need to scan everything and let site
+    // generation handle truncation (we don't know timestamps until after scanning).
+    match family.order_by {
+        TagOrder::Lexicographic => {
+            matched_tags.sort();
+            if let Some(n) = family.last_n {
+                let start = matched_tags.len().saturating_sub(n);
+                matched_tags = matched_tags.split_off(start);
+            }
         }
+        TagOrder::Numeric => {
+            matched_tags.sort_by(|a, b| {
+                crate::site::numeric_sort_key(a).cmp(&crate::site::numeric_sort_key(b))
+            });
+            if let Some(n) = family.last_n {
+                let start = matched_tags.len().saturating_sub(n);
+                matched_tags = matched_tags.split_off(start);
+            }
+        }
+        TagOrder::ScanTime => {}
     }
 
     let matched = matched_tags.len();
@@ -237,5 +249,34 @@ mod tests {
         assert!(pattern.is_match("v10.20.30"));
         assert!(pattern.is_match("v1.0.0-rc.1"));
         assert!(pattern.is_match("v0.5.1-rc.42"));
+    }
+
+    #[test]
+    fn numeric_tag_sorting_in_discover() {
+        use crate::site::numeric_sort_key;
+
+        let mut tags = vec![
+            "0.13.0_rhai2",
+            "0.14.1_rhai0",
+            "0.13.0_rhai12",
+            "0.13.0_rhai1",
+        ];
+        tags.sort_by_key(|a| numeric_sort_key(a));
+
+        assert_eq!(
+            tags,
+            vec![
+                "0.13.0_rhai1",
+                "0.13.0_rhai2",
+                "0.13.0_rhai12",
+                "0.14.1_rhai0",
+            ]
+        );
+
+        // Verify last_n truncation picks the right tail
+        let n = 2;
+        let start = tags.len().saturating_sub(n);
+        let last_two: Vec<&str> = tags.split_off(start);
+        assert_eq!(last_two, vec!["0.13.0_rhai12", "0.14.1_rhai0"]);
     }
 }

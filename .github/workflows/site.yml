@@ -41,7 +41,9 @@ jobs:
         with:
           path: scans.db
           key: scan-store-${{ hashFiles('wiimi-site.toml') }}-${{ github.run_number }}
-          restore-keys: scan-store-${{ hashFiles('wiimi-site.toml') }}-
+          restore-keys: |
+            scan-store-${{ hashFiles('wiimi-site.toml') }}-
+            scan-store-
 
       - name: Build wiimi
         run: cargo build --release

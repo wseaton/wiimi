@@ -35,6 +35,18 @@ pub enum TagOrder {
     Lexicographic,
     /// Sort by the time each image was first scanned/stored.
     ScanTime,
+    /// Split on non-digit characters and compare the resulting integer segments.
+    /// Handles schemes like `0.13.0_rhai12` where lexicographic sorting breaks.
+    Numeric,
+}
+
+/// Extract all contiguous runs of digits from a tag as a `Vec<u64>`.
+/// e.g. `"0.13.0_rhai12"` becomes `[0, 13, 0, 12]`.
+pub fn numeric_sort_key(tag: &str) -> Vec<u64> {
+    tag.split(|c: char| !c.is_ascii_digit())
+        .filter(|s| !s.is_empty())
+        .filter_map(|s| s.parse().ok())
+        .collect()
 }
 
 /// A named group of images discovered from a registry by tag pattern.
@@ -99,8 +111,16 @@ struct SiteData {
 #[derive(serde::Serialize)]
 struct FamilyData {
     name: String,
+    /// Image ref + display name for the compare dropdowns.
+    scans: Vec<FamilyScanEntry>,
     /// Map of "from_image|to_image" -> relative diff URL.
     diff_urls: std::collections::HashMap<String, String>,
+}
+
+#[derive(serde::Serialize)]
+struct FamilyScanEntry {
+    image: String,
+    short_name: String,
 }
 
 /// Data for a single scan row in the index page template.
@@ -121,7 +141,25 @@ struct IndexScanRow {
 struct IndexFamily {
     idx: usize,
     name: String,
+    subtitle: String,
     scans: Vec<IndexScanRow>,
+}
+
+/// Build a human-readable subtitle explaining the family's filter/sort config.
+fn family_subtitle(family: &FamilyConfig) -> String {
+    let count = match family.last_n {
+        Some(n) => format!("last {n}"),
+        None => "all".to_string(),
+    };
+    let order = match family.order_by {
+        TagOrder::Lexicographic => "lexicographic",
+        TagOrder::ScanTime => "scan time",
+        TagOrder::Numeric => "numeric",
+    };
+    format!(
+        "{count} images matching {}, sorted by {order}",
+        family.tag_pattern,
+    )
 }
 
 /// Build the nav link HTML for site-generated pages.
@@ -166,6 +204,14 @@ pub fn resolve_family_scans(family: &FamilyConfig, store: &ScanStore) -> Result<
     match family.order_by {
         TagOrder::Lexicographic => matched.sort_by(|a, b| a.scan.image.cmp(&b.scan.image)),
         TagOrder::ScanTime => matched.sort_by(|a, b| a.scanned_at.cmp(&b.scanned_at)),
+        TagOrder::Numeric => {
+            let prefix = family.image_prefix();
+            matched.sort_by(|a, b| {
+                let tag_a = a.scan.image.strip_prefix(&prefix).unwrap_or("");
+                let tag_b = b.scan.image.strip_prefix(&prefix).unwrap_or("");
+                numeric_sort_key(tag_a).cmp(&numeric_sort_key(tag_b))
+            });
+        }
     }
 
     if let Some(n) = family.last_n {
@@ -243,8 +289,17 @@ pub fn generate_site(config: &SiteConfig, store: &ScanStore) -> Result<()> {
             diff_urls.insert(key, url);
         }
 
+        let scan_entries: Vec<FamilyScanEntry> = scans
+            .iter()
+            .map(|s| FamilyScanEntry {
+                image: s.image.clone(),
+                short_name: short_image_name(&s.image),
+            })
+            .collect();
+
         site_data.families.push(FamilyData {
             name: family.name.clone(),
+            scans: scan_entries,
             diff_urls,
         });
 
@@ -285,6 +340,7 @@ pub fn generate_site(config: &SiteConfig, store: &ScanStore) -> Result<()> {
         index_families.push(IndexFamily {
             idx: family_idx,
             name: family.name.clone(),
+            subtitle: family_subtitle(family),
             scans: scan_rows,
         });
 
@@ -357,7 +413,8 @@ mod tests {
     use crate::nvidia::ComputeCapability;
     use crate::scan::{BinaryScanResult, EnvironmentInfo, ImageMetadata, ScanResult};
     use crate::site::{
-        all_pairs, resolve_family_scans, short_image_name, slug_for_image, FamilyConfig, SiteConfig,
+        all_pairs, numeric_sort_key, resolve_family_scans, short_image_name, slug_for_image,
+        FamilyConfig, SiteConfig,
     };
     use crate::store::ScanStore;
 
@@ -752,5 +809,104 @@ tag_pattern = '^v\d+$'
             .collect();
         let diff_html = std::fs::read_to_string(diff_files[0].path()).unwrap();
         assert!(diff_html.contains("Catalog"));
+    }
+
+    #[test]
+    fn numeric_sort_key_extracts_components() {
+        assert_eq!(numeric_sort_key("0.13.0_rhai12"), vec![0, 13, 0, 12]);
+        assert_eq!(numeric_sort_key("v1.2.3"), vec![1, 2, 3]);
+        assert_eq!(numeric_sort_key("0.14.1_rhai0"), vec![0, 14, 1, 0]);
+        assert_eq!(numeric_sort_key("latest"), Vec::<u64>::new());
+        assert_eq!(numeric_sort_key("42"), vec![42]);
+        assert_eq!(numeric_sort_key(""), Vec::<u64>::new());
+    }
+
+    #[test]
+    fn numeric_sort_key_ordering() {
+        // The whole point: _rhai2 should sort before _rhai12
+        let mut tags = vec![
+            "0.13.0_rhai12",
+            "0.13.0_rhai2",
+            "0.14.1_rhai0",
+            "0.13.0_rhai1",
+        ];
+        tags.sort_by_key(|a| numeric_sort_key(a));
+        assert_eq!(
+            tags,
+            vec![
+                "0.13.0_rhai1",
+                "0.13.0_rhai2",
+                "0.13.0_rhai12",
+                "0.14.1_rhai0",
+            ]
+        );
+    }
+
+    #[test]
+    fn rhai_tag_pattern_matches() {
+        let pattern = regex::Regex::new(r"^\d+\.\d+\.\d+_rhai\d+$").unwrap();
+        assert!(pattern.is_match("0.13.0_rhai12"));
+        assert!(pattern.is_match("0.14.1_rhai0"));
+        assert!(pattern.is_match("1.0.0_rhai99"));
+        assert!(!pattern.is_match("v0.13.0_rhai12"));
+        assert!(!pattern.is_match("latest"));
+        assert!(!pattern.is_match("0.13.0"));
+        assert!(!pattern.is_match("0.13.0_rhai"));
+    }
+
+    #[test]
+    fn parse_config_with_numeric_order() {
+        let toml = r#"
+title = "Test"
+output_dir = "_site"
+
+[[family]]
+name = "CUDA"
+registry = "quay.io"
+repository = "vllm/vllm-cuda"
+tag_pattern = '^\d+\.\d+\.\d+_rhai\d+$'
+last_n = 10
+order_by = "numeric"
+"#;
+        let config = SiteConfig::from_toml(toml).unwrap();
+        let family = &config.families[0];
+        assert_eq!(family.last_n, Some(10));
+        assert_eq!(family.order_by, crate::site::TagOrder::Numeric);
+    }
+
+    #[test]
+    fn resolve_family_scans_numeric_ordering_with_last_n() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("test.db");
+        let store = ScanStore::open(&db_path).unwrap();
+
+        // Insert tags that would sort wrong lexicographically
+        store
+            .upsert(&test_scan("quay.io/vllm/vllm-cuda:0.13.0_rhai2"))
+            .unwrap();
+        store
+            .upsert(&test_scan("quay.io/vllm/vllm-cuda:0.13.0_rhai12"))
+            .unwrap();
+        store
+            .upsert(&test_scan("quay.io/vllm/vllm-cuda:0.13.0_rhai1"))
+            .unwrap();
+        store
+            .upsert(&test_scan("quay.io/vllm/vllm-cuda:0.14.1_rhai0"))
+            .unwrap();
+
+        let mut family = test_family(
+            "CUDA",
+            "quay.io",
+            "vllm/vllm-cuda",
+            r"^\d+\.\d+\.\d+_rhai\d+$",
+        );
+        family.order_by = crate::site::TagOrder::Numeric;
+        family.last_n = Some(2);
+
+        let scans = resolve_family_scans(&family, &store).unwrap();
+        assert_eq!(scans.len(), 2);
+        // Last 2 numerically: 0.13.0_rhai12 and 0.14.1_rhai0
+        assert_eq!(scans[0].image, "quay.io/vllm/vllm-cuda:0.13.0_rhai12");
+        assert_eq!(scans[1].image, "quay.io/vllm/vllm-cuda:0.14.1_rhai0");
     }
 }
