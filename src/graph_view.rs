@@ -931,4 +931,88 @@ mod tests {
         assert_eq!(cc_key(&[cc(7, 0)], &[cc(9, 0)]), "70+90");
         assert_eq!(cc_key(&[], &[]), "");
     }
+
+    #[test]
+    fn load_real_scan_and_verify_clusters() {
+        let path = std::path::Path::new("wiimi-scan-docker.io_vllm_vllm-openai_v0.16.0.json");
+        if !path.exists() {
+            // Skip if the scan file isn't present (CI, etc.)
+            return;
+        }
+        let content = std::fs::read_to_string(path).unwrap();
+        let result: crate::scan::ScanResult = serde_json::from_str(&content).unwrap();
+        let graph = result.dep_graph.as_ref().unwrap();
+        let gv = build_graph_view(graph);
+
+        // vLLM v0.16.0 has ~770 visible CUDA nodes, mostly in flashinfer_jit_cache
+        // With 384 + 254 + 59 nodes sharing dir+cc profiles, we expect clusters
+        assert!(
+            !gv.clusters.is_empty(),
+            "expected clusters for vLLM image, got 0 (nodes: {}, all in graph: {})",
+            gv.nodes.len(),
+            graph.nodes.len()
+        );
+
+        let total_clustered: usize = gv.clusters.iter().map(|c| c.members.len()).sum();
+        assert!(
+            total_clustered > 100,
+            "expected >100 clustered nodes, got {total_clustered}"
+        );
+
+        // Individual (unclustered) nodes should be much fewer than total visible
+        assert!(
+            gv.nodes.len() < 200,
+            "expected <200 individual nodes after clustering, got {}",
+            gv.nodes.len()
+        );
+
+        eprintln!(
+            "vLLM graph_view: {} individual, {} clusters ({} clustered), {} edges",
+            gv.nodes.len(),
+            gv.clusters.len(),
+            total_clustered,
+            gv.edges.len()
+        );
+    }
+
+    #[test]
+    fn dir_key_dist_packages() {
+        assert_eq!(
+            dir_key("/usr/local/lib/python3.12/dist-packages/flashinfer_jit_cache/jit_cache/foo/foo.so"),
+            "flashinfer_jit_cache"
+        );
+    }
+
+    #[test]
+    fn clustering_dist_packages_large_group() {
+        // Simulate 30 flashinfer JIT .so files under dist-packages with same CC
+        let mut nodes = HashMap::new();
+        for i in 0..30 {
+            let soname = format!("batch_op_{i}_sm90.so");
+            let path = format!(
+                "/usr/local/lib/python3.12/dist-packages/flashinfer_jit_cache/jit_cache/batch_op_{i}_sm90/batch_op_{i}_sm90.so"
+            );
+            let (k, n) = make_node(&soname, &path, vec![cc(9, 0), cc(10, 0), cc(12, 0)], vec![]);
+            nodes.insert(k, n);
+        }
+
+        let graph = DepGraph {
+            roots: vec![],
+            nodes,
+        };
+
+        let visible = find_visible_nodes(&graph);
+        assert_eq!(visible.len(), 30);
+
+        let (individual, clusters, node_to_cluster) = build_clusters(&visible, &graph);
+        assert!(
+            individual.is_empty(),
+            "all 30 dist-packages nodes should be clustered, got {} individual",
+            individual.len()
+        );
+        assert_eq!(clusters.len(), 1);
+        assert_eq!(clusters[0].members.len(), 30);
+        assert_eq!(clusters[0].dir_key, "flashinfer_jit_cache");
+        assert_eq!(node_to_cluster.len(), 30);
+    }
 }
