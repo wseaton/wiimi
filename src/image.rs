@@ -26,8 +26,9 @@ const DEFAULT_LIB_DIRS: &[&str] = &[
     "/usr/local/cuda/lib",
 ];
 
-/// Default Python site-packages path prefix.
-const PYTHON_SITE_PACKAGES: &str = "site-packages/";
+/// Python package directory markers.
+/// Debian/Ubuntu uses `dist-packages`, everything else uses `site-packages`.
+const PYTHON_PACKAGE_DIRS: &[&str] = &["site-packages/", "dist-packages/"];
 
 /// Priority classification for discovered binaries.
 #[derive(
@@ -286,8 +287,15 @@ pub(crate) fn classify_path(path: &str, config: &ImageConfig) -> Option<BinaryPr
         return None;
     }
 
-    // Checked before Python to avoid VIRTUAL_ENV false positives
-    // on libs that happen to live under the venv prefix.
+    // site-packages is unambiguous: any .so there is a Python extension,
+    // and must be checked before LinkerLibrary since DEFAULT_LIB_DIRS
+    // like /usr/local/lib are prefixes of typical site-packages paths.
+    if PYTHON_PACKAGE_DIRS.iter().any(|dir| path.contains(dir)) {
+        return Some(BinaryPriority::PythonExtension);
+    }
+
+    // LinkerLibrary before VIRTUAL_ENV to avoid false positives on
+    // system libs that happen to live under the venv prefix.
     let is_linker_lib = config
         .ld_library_dirs
         .iter()
@@ -301,9 +309,6 @@ pub(crate) fn classify_path(path: &str, config: &ImageConfig) -> Option<BinaryPr
         return Some(BinaryPriority::LinkerLibrary);
     }
 
-    if path.contains(PYTHON_SITE_PACKAGES) {
-        return Some(BinaryPriority::PythonExtension);
-    }
     if let Some(ref venv) = config.virtual_env {
         if path.starts_with(venv.as_str()) && path.contains("/lib") {
             return Some(BinaryPriority::PythonExtension);
@@ -702,12 +707,16 @@ fn classify_metadata(path: &str) -> Option<MetadataKind> {
     {
         return Some(MetadataKind::LdSoConf);
     }
-    // Python package METADATA: */site-packages/*/METADATA
-    if path.contains("site-packages/") && path.ends_with("/METADATA") {
-        // Verify it's exactly one level deep inside a package dir
-        if let Some(after) = path.rsplit("site-packages/").next() {
-            if after.matches('/').count() == 1 {
-                return Some(MetadataKind::PythonMetadata);
+    // Python package METADATA: */{site,dist}-packages/*/METADATA
+    if path.ends_with("/METADATA") {
+        for marker in PYTHON_PACKAGE_DIRS {
+            if path.contains(marker) {
+                if let Some(after) = path.rsplit(marker).next() {
+                    if after.matches('/').count() == 1 {
+                        return Some(MetadataKind::PythonMetadata);
+                    }
+                }
+                break;
             }
         }
     }
@@ -724,17 +733,18 @@ fn classify_metadata(path: &str) -> Option<MetadataKind> {
     None
 }
 
-/// Extract the site-packages directory prefix from a METADATA path.
+/// Extract the Python packages directory prefix from a METADATA path.
 ///
 /// Given `/opt/vllm/lib/python3.12/site-packages/torch/METADATA`,
 /// returns `/opt/vllm/lib/python3.12/site-packages`.
+/// Also handles Debian/Ubuntu `dist-packages` paths.
 fn extract_site_packages_dir(path: &str) -> &str {
-    const MARKER: &str = "site-packages";
-    if let Some(idx) = path.find(MARKER) {
-        &path[..idx + MARKER.len()]
-    } else {
-        path
+    for marker in &["site-packages", "dist-packages"] {
+        if let Some(idx) = path.find(marker) {
+            return &path[..idx + marker.len()];
+        }
     }
+    path
 }
 
 /// Parse Python METADATA file for Name and Version fields.
@@ -908,6 +918,21 @@ mod tests {
     }
 
     #[test]
+    fn classify_python_extension_under_default_lib_dir() {
+        // Python extensions in /usr/local/lib/... (a DEFAULT_LIB_DIR prefix)
+        // must still be classified as PythonExtension, not LinkerLibrary.
+        // This is the common layout on Ubuntu/Debian-based images.
+        let config = test_config();
+        assert_eq!(
+            classify_path(
+                "/usr/local/lib/python3.12/dist-packages/torch/_C.cpython-312-x86_64-linux-gnu.so",
+                &config
+            ),
+            Some(BinaryPriority::PythonExtension)
+        );
+    }
+
+    #[test]
     fn classify_loose_cubin() {
         let config = test_config();
         assert_eq!(
@@ -1045,6 +1070,19 @@ mod tests {
     }
 
     #[test]
+    fn classify_python_metadata_dist_packages() {
+        // Debian/Ubuntu uses dist-packages instead of site-packages
+        assert!(matches!(
+            classify_metadata("/usr/local/lib/python3.12/dist-packages/vllm/METADATA"),
+            Some(MetadataKind::PythonMetadata)
+        ));
+        assert!(
+            classify_metadata("/usr/local/lib/python3.12/dist-packages/vllm/sub/METADATA")
+                .is_none()
+        );
+    }
+
+    #[test]
     fn classify_dpkg_status() {
         assert!(matches!(
             classify_metadata("/var/lib/dpkg/status"),
@@ -1123,6 +1161,14 @@ mod tests {
         assert_eq!(
             extract_site_packages_dir("/usr/lib/python3.12/site-packages/numpy/METADATA"),
             "/usr/lib/python3.12/site-packages"
+        );
+    }
+
+    #[test]
+    fn site_packages_dir_dist_packages() {
+        assert_eq!(
+            extract_site_packages_dir("/usr/local/lib/python3.12/dist-packages/torch/METADATA"),
+            "/usr/local/lib/python3.12/dist-packages"
         );
     }
 
