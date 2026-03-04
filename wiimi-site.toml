@@ -7,3 +7,10 @@ name = "llm-d CUDA"
 registry = "ghcr.io"
 repository = "llm-d/llm-d-cuda"
 tag_pattern = '^v\d+\.\d+\.\d+(-rc\.\d+)?$'
+
+[[family]]
+name = "vLLM Community Images"
+registry = "docker.io"
+repository = "vllm/vllm-openai"
+tag_pattern = '^v\d+\.\d+\.\d+$'
+last_n = 10
