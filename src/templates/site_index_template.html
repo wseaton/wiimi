@@ -108,6 +108,15 @@
   font-size: 0.75rem;
   text-transform: uppercase;
   letter-spacing: 0.05em;
+  cursor: pointer;
+  user-select: none;
+}
+.scan-table th:hover {
+  color: var(--text);
+}
+.sort-arrow {
+  margin-left: 4px;
+  font-size: 0.65rem;
 }
 .scan-table td {
   padding: 6px 12px;
@@ -234,6 +243,69 @@ goBtn.addEventListener('click', function() {
 });
 
 populateTagSelects();
+
+// Sortable table columns
+document.querySelectorAll('.scan-table').forEach(function(table) {
+  var headers = table.querySelectorAll('th');
+  var sortState = { col: -1, asc: true };
+
+  headers.forEach(function(th, colIdx) {
+    th.addEventListener('click', function() {
+      if (sortState.col === colIdx) {
+        sortState.asc = !sortState.asc;
+      } else {
+        sortState.col = colIdx;
+        sortState.asc = true;
+      }
+
+      // Clear all arrows, set active
+      headers.forEach(function(h) {
+        var arrow = h.querySelector('.sort-arrow');
+        if (arrow) arrow.remove();
+      });
+      var span = document.createElement('span');
+      span.className = 'sort-arrow';
+      span.textContent = sortState.asc ? '\u25B2' : '\u25BC';
+      th.appendChild(span);
+
+      var tbody = table.querySelector('tbody');
+      var rows = Array.prototype.slice.call(tbody.querySelectorAll('tr'));
+
+      rows.sort(function(a, b) {
+        var aText = a.cells[colIdx].textContent.trim();
+        var bText = b.cells[colIdx].textContent.trim();
+
+        // Try numeric comparison first
+        var aNum = parseFloat(aText);
+        var bNum = parseFloat(bText);
+        if (!isNaN(aNum) && !isNaN(bNum)) {
+          return sortState.asc ? aNum - bNum : bNum - aNum;
+        }
+
+        // Version-aware comparison: split on . and compare segments
+        var aSegs = aText.replace(/^v/, '').split(/[\.\-_]/);
+        var bSegs = bText.replace(/^v/, '').split(/[\.\-_]/);
+        var isVersionLike = aSegs.length > 1 && bSegs.length > 1 &&
+          !isNaN(parseInt(aSegs[0])) && !isNaN(parseInt(bSegs[0]));
+
+        if (isVersionLike) {
+          for (var i = 0; i < Math.max(aSegs.length, bSegs.length); i++) {
+            var sa = parseInt(aSegs[i]) || 0;
+            var sb = parseInt(bSegs[i]) || 0;
+            if (sa !== sb) return sortState.asc ? sa - sb : sb - sa;
+          }
+          return 0;
+        }
+
+        // String fallback
+        var cmp = aText.localeCompare(bText);
+        return sortState.asc ? cmp : -cmp;
+      });
+
+      rows.forEach(function(row) { tbody.appendChild(row); });
+    });
+  });
+});
 </script>
 </body>
 </html>

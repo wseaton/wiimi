@@ -75,3 +75,6 @@ base64 = "0.22"
 
 # Templating
 minijinja = { version = "2", features = ["builtins"] }
+
+# Version parsing
+semver = "1"

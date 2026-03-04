@@ -15,6 +15,7 @@ registry = "docker.io"
 repository = "vllm/vllm-openai"
 tag_pattern = '^v\d+\.\d+\.\d+$'
 last_n = 2
+order_by = "semver"
 
 [[family]]
 name = "Red Hat Community Images"
@@ -22,4 +23,5 @@ registry = "quay.io"
 repository = "vllm/vllm-cuda"
 tag_pattern = '^\d+\.\d+\.\d+_rhai\d+$'
 last_n = 2
-order_by = "numeric"
+order_by = "semver_build"
+build_separator = "_rhai"

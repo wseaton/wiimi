@@ -38,6 +38,12 @@ pub enum TagOrder {
     /// Split on non-digit characters and compare the resulting integer segments.
     /// Handles schemes like `0.13.0_rhai12` where lexicographic sorting breaks.
     Numeric,
+    /// Proper semver comparison. Strips a leading `v` prefix before parsing.
+    Semver,
+    /// Semver comparison with a build number tiebreaker. Requires
+    /// `build_separator` on the family config to split the tag into
+    /// `{semver}{separator}{build_number}`.
+    SemverBuild,
 }
 
 /// Extract all contiguous runs of digits from a tag as a `Vec<u64>`.
@@ -47,6 +53,21 @@ pub fn numeric_sort_key(tag: &str) -> Vec<u64> {
         .filter(|s| !s.is_empty())
         .filter_map(|s| s.parse().ok())
         .collect()
+}
+
+/// Parse a tag as semver, stripping a leading `v` if present.
+pub fn parse_semver(tag: &str) -> Option<semver::Version> {
+    let stripped = tag.strip_prefix('v').unwrap_or(tag);
+    semver::Version::parse(stripped).ok()
+}
+
+/// Parse a tag as semver + build number, splitting on the given separator.
+/// Returns `(version, build_number)` for comparison.
+pub fn parse_semver_build(tag: &str, separator: &str) -> Option<(semver::Version, u64)> {
+    let (ver_part, build_part) = tag.rsplit_once(separator)?;
+    let version = semver::Version::parse(ver_part).ok()?;
+    let build = build_part.parse::<u64>().ok()?;
+    Some((version, build))
 }
 
 /// A named group of images discovered from a registry by tag pattern.
@@ -66,6 +87,11 @@ pub struct FamilyConfig {
     /// How to order tags when applying `last_n`. Defaults to lexicographic.
     #[serde(default)]
     pub order_by: TagOrder,
+    /// Separator between the semver portion and the build number in tags.
+    /// Required when `order_by = "semver_build"`. E.g. `"_rhai"` splits
+    /// `0.13.0_rhai12` into semver `0.13.0` and build `12`.
+    #[serde(default)]
+    pub build_separator: Option<String>,
 }
 
 impl FamilyConfig {
@@ -92,13 +118,27 @@ impl FamilyConfig {
 
 impl SiteConfig {
     pub fn from_toml(s: &str) -> Result<Self> {
-        toml::from_str(s).context("failed to parse site config")
+        let config: Self = toml::from_str(s).context("failed to parse site config")?;
+        config.validate()?;
+        Ok(config)
     }
 
     pub fn load(path: &Path) -> Result<Self> {
         let content = std::fs::read_to_string(path)
             .with_context(|| format!("failed to read config: {}", path.display()))?;
         Self::from_toml(&content)
+    }
+
+    fn validate(&self) -> Result<()> {
+        for family in &self.families {
+            if family.order_by == TagOrder::SemverBuild && family.build_separator.is_none() {
+                anyhow::bail!(
+                    "family '{}': order_by = \"semver_build\" requires a build_separator",
+                    family.name
+                );
+            }
+        }
+        Ok(())
     }
 }
 
@@ -155,6 +195,8 @@ fn family_subtitle(family: &FamilyConfig) -> String {
         TagOrder::Lexicographic => "lexicographic",
         TagOrder::ScanTime => "scan time",
         TagOrder::Numeric => "numeric",
+        TagOrder::Semver => "semver",
+        TagOrder::SemverBuild => "semver+build",
     };
     format!(
         "{count} images matching {}, sorted by {order}",
@@ -212,12 +254,49 @@ pub fn resolve_family_scans(family: &FamilyConfig, store: &ScanStore) -> Result<
                 numeric_sort_key(tag_a).cmp(&numeric_sort_key(tag_b))
             });
         }
+        TagOrder::Semver => {
+            let prefix = family.image_prefix();
+            matched.sort_by(|a, b| {
+                let tag_a = a.scan.image.strip_prefix(&prefix).unwrap_or("");
+                let tag_b = b.scan.image.strip_prefix(&prefix).unwrap_or("");
+                let va = parse_semver(tag_a);
+                let vb = parse_semver(tag_b);
+                match (va, vb) {
+                    (Some(a), Some(b)) => a.cmp(&b),
+                    (Some(_), None) => std::cmp::Ordering::Greater,
+                    (None, Some(_)) => std::cmp::Ordering::Less,
+                    (None, None) => tag_a.cmp(tag_b),
+                }
+            });
+        }
+        TagOrder::SemverBuild => {
+            let prefix = family.image_prefix();
+            let sep = family
+                .build_separator
+                .as_deref()
+                .expect("semver_build requires build_separator (validated at config load)");
+            matched.sort_by(|a, b| {
+                let tag_a = a.scan.image.strip_prefix(&prefix).unwrap_or("");
+                let tag_b = b.scan.image.strip_prefix(&prefix).unwrap_or("");
+                let va = parse_semver_build(tag_a, sep);
+                let vb = parse_semver_build(tag_b, sep);
+                match (va, vb) {
+                    (Some(a), Some(b)) => a.cmp(&b),
+                    (Some(_), None) => std::cmp::Ordering::Greater,
+                    (None, Some(_)) => std::cmp::Ordering::Less,
+                    (None, None) => tag_a.cmp(tag_b),
+                }
+            });
+        }
     }
 
     if let Some(n) = family.last_n {
         let start = matched.len().saturating_sub(n);
         matched = matched.split_off(start);
     }
+
+    // Latest first: reverse so the table shows newest versions at the top.
+    matched.reverse();
 
     Ok(matched.into_iter().map(|entry| entry.scan).collect())
 }
@@ -430,6 +509,7 @@ mod tests {
             tag_pattern: pattern.to_string(),
             last_n: None,
             order_by: crate::site::TagOrder::Lexicographic,
+            build_separator: None,
         }
     }
 
@@ -593,8 +673,9 @@ tag_pattern = '^v\d+$'
         let scans = resolve_family_scans(&family, &store).unwrap();
 
         assert_eq!(scans.len(), 2);
-        assert_eq!(scans[0].image, "ghcr.io/org/repo:v1.0.0");
-        assert_eq!(scans[1].image, "ghcr.io/org/repo:v2.0.0");
+        // Reversed: latest first
+        assert_eq!(scans[0].image, "ghcr.io/org/repo:v2.0.0");
+        assert_eq!(scans[1].image, "ghcr.io/org/repo:v1.0.0");
     }
 
     #[test]
@@ -614,10 +695,10 @@ tag_pattern = '^v\d+$'
 
         let scans = resolve_family_scans(&family, &store).unwrap();
         assert_eq!(scans.len(), 3);
-        // Should keep the last 3 lexicographically (highest versions)
-        assert_eq!(scans[0].image, "ghcr.io/org/repo:v3.0.0");
+        // Should keep the last 3 lexicographically, reversed (latest first)
+        assert_eq!(scans[0].image, "ghcr.io/org/repo:v5.0.0");
         assert_eq!(scans[1].image, "ghcr.io/org/repo:v4.0.0");
-        assert_eq!(scans[2].image, "ghcr.io/org/repo:v5.0.0");
+        assert_eq!(scans[2].image, "ghcr.io/org/repo:v3.0.0");
     }
 
     #[test]
@@ -638,9 +719,9 @@ tag_pattern = '^v\d+$'
 
         let scans = resolve_family_scans(&family, &store).unwrap();
         assert_eq!(scans.len(), 2);
-        // Last 2 by scan time: v1.0.0 then v5.0.0 (insertion order)
-        assert_eq!(scans[0].image, "ghcr.io/org/repo:v1.0.0");
-        assert_eq!(scans[1].image, "ghcr.io/org/repo:v5.0.0");
+        // Last 2 by scan time, reversed (latest first)
+        assert_eq!(scans[0].image, "ghcr.io/org/repo:v5.0.0");
+        assert_eq!(scans[1].image, "ghcr.io/org/repo:v1.0.0");
     }
 
     #[test]
@@ -905,8 +986,222 @@ order_by = "numeric"
 
         let scans = resolve_family_scans(&family, &store).unwrap();
         assert_eq!(scans.len(), 2);
-        // Last 2 numerically: 0.13.0_rhai12 and 0.14.1_rhai0
-        assert_eq!(scans[0].image, "quay.io/vllm/vllm-cuda:0.13.0_rhai12");
-        assert_eq!(scans[1].image, "quay.io/vllm/vllm-cuda:0.14.1_rhai0");
+        // Last 2 numerically, reversed (latest first)
+        assert_eq!(scans[0].image, "quay.io/vllm/vllm-cuda:0.14.1_rhai0");
+        assert_eq!(scans[1].image, "quay.io/vllm/vllm-cuda:0.13.0_rhai12");
+    }
+
+    #[test]
+    fn parse_semver_valid() {
+        use crate::site::parse_semver;
+
+        let v = parse_semver("v1.2.3").unwrap();
+        assert_eq!(v, semver::Version::new(1, 2, 3));
+
+        let v = parse_semver("1.2.3").unwrap();
+        assert_eq!(v, semver::Version::new(1, 2, 3));
+
+        let v = parse_semver("v0.5.0-rc.1").unwrap();
+        assert_eq!(v.major, 0);
+        assert_eq!(v.minor, 5);
+        assert_eq!(v.patch, 0);
+        assert!(!v.pre.is_empty());
+    }
+
+    #[test]
+    fn parse_semver_invalid() {
+        use crate::site::parse_semver;
+
+        assert!(parse_semver("latest").is_none());
+        assert!(parse_semver("").is_none());
+        assert!(parse_semver("not-a-version").is_none());
+        assert!(parse_semver("v1").is_none());
+        assert!(parse_semver("v1.2").is_none());
+    }
+
+    #[test]
+    fn parse_semver_build_valid() {
+        use crate::site::parse_semver_build;
+
+        let (v, b) = parse_semver_build("0.13.0_rhai12", "_rhai").unwrap();
+        assert_eq!(v, semver::Version::new(0, 13, 0));
+        assert_eq!(b, 12);
+
+        let (v, b) = parse_semver_build("0.14.1_rhai0", "_rhai").unwrap();
+        assert_eq!(v, semver::Version::new(0, 14, 1));
+        assert_eq!(b, 0);
+    }
+
+    #[test]
+    fn parse_semver_build_invalid() {
+        use crate::site::parse_semver_build;
+
+        assert!(parse_semver_build("0.13.0", "_rhai").is_none());
+        assert!(parse_semver_build("0.13.0_rhai", "_rhai").is_none());
+        assert!(parse_semver_build("latest_rhai5", "_rhai").is_none());
+        assert!(parse_semver_build("", "_rhai").is_none());
+    }
+
+    #[test]
+    fn semver_ordering() {
+        use crate::site::parse_semver;
+
+        let mut versions = vec!["v0.15.1", "v0.5.0-rc.1", "v0.5.0", "v0.7.3"];
+        versions.sort_by_key(|a| parse_semver(a));
+        assert_eq!(versions, vec!["v0.5.0-rc.1", "v0.5.0", "v0.7.3", "v0.15.1"]);
+    }
+
+    #[test]
+    fn semver_build_ordering() {
+        use crate::site::parse_semver_build;
+
+        let sep = "_rhai";
+        let mut tags = vec![
+            "0.13.0_rhai12",
+            "0.13.0_rhai2",
+            "0.14.1_rhai0",
+            "0.13.0_rhai1",
+        ];
+        tags.sort_by_key(|a| parse_semver_build(a, sep));
+        assert_eq!(
+            tags,
+            vec![
+                "0.13.0_rhai1",
+                "0.13.0_rhai2",
+                "0.13.0_rhai12",
+                "0.14.1_rhai0",
+            ]
+        );
+    }
+
+    #[test]
+    fn resolve_family_scans_semver_ordering_with_last_n() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("test.db");
+        let store = ScanStore::open(&db_path).unwrap();
+
+        // These sort wrong lexicographically: "v0.7.3" > "v0.15.1"
+        store
+            .upsert(&test_scan("docker.io/vllm/openai:v0.7.3"))
+            .unwrap();
+        store
+            .upsert(&test_scan("docker.io/vllm/openai:v0.15.1"))
+            .unwrap();
+        store
+            .upsert(&test_scan("docker.io/vllm/openai:v0.5.0"))
+            .unwrap();
+        store
+            .upsert(&test_scan("docker.io/vllm/openai:v0.5.0-rc.1"))
+            .unwrap();
+
+        let mut family = test_family(
+            "vLLM",
+            "docker.io",
+            "vllm/openai",
+            r"^v\d+\.\d+\.\d+(-rc\.\d+)?$",
+        );
+        family.order_by = crate::site::TagOrder::Semver;
+        family.last_n = Some(3);
+
+        let scans = resolve_family_scans(&family, &store).unwrap();
+        assert_eq!(scans.len(), 3);
+        // Last 3 by semver, reversed (latest first)
+        assert_eq!(scans[0].image, "docker.io/vllm/openai:v0.15.1");
+        assert_eq!(scans[1].image, "docker.io/vllm/openai:v0.7.3");
+        assert_eq!(scans[2].image, "docker.io/vllm/openai:v0.5.0");
+    }
+
+    #[test]
+    fn resolve_family_scans_semver_build_ordering() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("test.db");
+        let store = ScanStore::open(&db_path).unwrap();
+
+        store
+            .upsert(&test_scan("quay.io/vllm/cuda:0.13.0_rhai2"))
+            .unwrap();
+        store
+            .upsert(&test_scan("quay.io/vllm/cuda:0.13.0_rhai12"))
+            .unwrap();
+        store
+            .upsert(&test_scan("quay.io/vllm/cuda:0.14.1_rhai0"))
+            .unwrap();
+        store
+            .upsert(&test_scan("quay.io/vllm/cuda:0.13.0_rhai1"))
+            .unwrap();
+
+        let mut family = test_family("RHAI", "quay.io", "vllm/cuda", r"^\d+\.\d+\.\d+_rhai\d+$");
+        family.order_by = crate::site::TagOrder::SemverBuild;
+        family.build_separator = Some("_rhai".to_string());
+        family.last_n = Some(3);
+
+        let scans = resolve_family_scans(&family, &store).unwrap();
+        assert_eq!(scans.len(), 3);
+        // Last 3 by semver+build, reversed (latest first)
+        assert_eq!(scans[0].image, "quay.io/vllm/cuda:0.14.1_rhai0");
+        assert_eq!(scans[1].image, "quay.io/vllm/cuda:0.13.0_rhai12");
+        assert_eq!(scans[2].image, "quay.io/vllm/cuda:0.13.0_rhai2");
+    }
+
+    #[test]
+    fn parse_config_with_semver_order() {
+        let toml = r#"
+title = "Test"
+output_dir = "_site"
+
+[[family]]
+name = "vLLM"
+registry = "docker.io"
+repository = "vllm/vllm-openai"
+tag_pattern = '^v\d+\.\d+\.\d+$'
+last_n = 10
+order_by = "semver"
+"#;
+        let config = SiteConfig::from_toml(toml).unwrap();
+        let family = &config.families[0];
+        assert_eq!(family.order_by, crate::site::TagOrder::Semver);
+        assert!(family.build_separator.is_none());
+    }
+
+    #[test]
+    fn parse_config_with_semver_build_order() {
+        let toml = r#"
+title = "Test"
+output_dir = "_site"
+
+[[family]]
+name = "RHAI"
+registry = "quay.io"
+repository = "vllm/vllm-cuda"
+tag_pattern = '^\d+\.\d+\.\d+_rhai\d+$'
+last_n = 10
+order_by = "semver_build"
+build_separator = "_rhai"
+"#;
+        let config = SiteConfig::from_toml(toml).unwrap();
+        let family = &config.families[0];
+        assert_eq!(family.order_by, crate::site::TagOrder::SemverBuild);
+        assert_eq!(family.build_separator.as_deref(), Some("_rhai"));
+    }
+
+    #[test]
+    fn config_validation_rejects_semver_build_without_separator() {
+        let toml = r#"
+title = "Test"
+output_dir = "_site"
+
+[[family]]
+name = "Bad"
+registry = "quay.io"
+repository = "vllm/vllm-cuda"
+tag_pattern = '^\d+\.\d+\.\d+_rhai\d+$'
+order_by = "semver_build"
+"#;
+        let err = SiteConfig::from_toml(toml).unwrap_err();
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("build_separator"),
+            "expected error about build_separator, got: {msg}"
+        );
     }
 }

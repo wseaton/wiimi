@@ -97,6 +97,42 @@ pub async fn discover_family(
                 matched_tags = matched_tags.split_off(start);
             }
         }
+        TagOrder::Semver => {
+            matched_tags.sort_by(|a, b| {
+                let va = crate::site::parse_semver(a);
+                let vb = crate::site::parse_semver(b);
+                match (va, vb) {
+                    (Some(a), Some(b)) => a.cmp(&b),
+                    (Some(_), None) => std::cmp::Ordering::Greater,
+                    (None, Some(_)) => std::cmp::Ordering::Less,
+                    (None, None) => a.cmp(b),
+                }
+            });
+            if let Some(n) = family.last_n {
+                let start = matched_tags.len().saturating_sub(n);
+                matched_tags = matched_tags.split_off(start);
+            }
+        }
+        TagOrder::SemverBuild => {
+            let sep = family
+                .build_separator
+                .as_deref()
+                .expect("semver_build requires build_separator (validated at config load)");
+            matched_tags.sort_by(|a, b| {
+                let va = crate::site::parse_semver_build(a, sep);
+                let vb = crate::site::parse_semver_build(b, sep);
+                match (va, vb) {
+                    (Some(a), Some(b)) => a.cmp(&b),
+                    (Some(_), None) => std::cmp::Ordering::Greater,
+                    (None, Some(_)) => std::cmp::Ordering::Less,
+                    (None, None) => a.cmp(b),
+                }
+            });
+            if let Some(n) = family.last_n {
+                let start = matched_tags.len().saturating_sub(n);
+                matched_tags = matched_tags.split_off(start);
+            }
+        }
         TagOrder::ScanTime => {}
     }
 
