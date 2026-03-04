@@ -635,6 +635,7 @@
       <button class="graph-btn" id="fit-btn">Fit</button>
       <button class="graph-btn" id="zoom-in">+</button>
       <button class="graph-btn" id="zoom-out">-</button>
+      <button class="graph-btn" id="toggle-host" title="Show/hide unresolved host dependencies">Host deps</button>
     </div>
     <div class="legend">
       <div class="legend-item"><div class="legend-swatch" style="background:#b16286"></div> Maxwell</div>
@@ -644,6 +645,7 @@
       <div class="legend-item"><div class="legend-swatch" style="background:#689d6a"></div> Hopper</div>
       <div class="legend-item"><div class="legend-swatch" style="background:#458588"></div> Blackwell+</div>
       <div class="legend-item"><div class="legend-swatch" style="background:#076678;border:1px dashed #458588"></div> PTX</div>
+      <div class="legend-item"><div class="legend-swatch" style="background:#3c3836;border:2px dashed #cc241d"></div> Host</div>
     </div>
     <div class="cy-tooltip" id="tooltip"></div>
   </div>
@@ -799,7 +801,8 @@ const DATA = {{ graph_data|safe }};
   // Step 2: group visible nodes by (directory, CC profile) for auto-collapse
   function dirKey(path) {
     const parts = path.split('/');
-    const spIdx = parts.indexOf('site-packages');
+    let spIdx = parts.indexOf('site-packages');
+    if (spIdx < 0) spIdx = parts.indexOf('dist-packages');
     if (spIdx >= 0 && spIdx + 1 < parts.length) return parts[spIdx + 1];
     if (parts.length >= 2) return parts[parts.length - 2];
     return '/';
@@ -905,6 +908,30 @@ const DATA = {{ graph_data|safe }};
     });
   }
 
+  // Step 4b: collect unresolved (host) dependencies as synthetic nodes.
+  // Scan ALL graph nodes so we capture deps from non-visible binaries too.
+  const hostNodes = new Set();
+  for (const [, node] of Object.entries(allNodes)) {
+    for (const u of (node.unresolved || [])) hostNodes.add(u);
+  }
+
+  // Host elements are stored separately and added/removed by the toggle.
+  const hostElements = [];
+  for (const soname of hostNodes) {
+    const nameWidth = soname.length * 7 + 16;
+    hostElements.push({
+      group: 'nodes',
+      data: {
+        id: 'host_' + soname,
+        label: '',
+        type: 'host',
+        nodeWidth: Math.max(nameWidth, 90),
+        nodeHeight: 24,
+        soname: soname,
+      },
+    });
+  }
+
   // Step 5: build edges (arrows point dependency → dependent)
   const edgeSet = new Set();
 
@@ -952,6 +979,49 @@ const DATA = {{ graph_data|safe }};
       if (nodeToCluster[dep]) {
         addEdge(nodeToCluster[dep], soname);
       }
+    }
+  }
+
+  // Edges from host (unresolved) nodes to visible dependants.
+  // Walk DOWN from each visible node through transitive deps, collecting
+  // which unresolved host libs it transitively needs.
+  function collectTransitiveUnresolved(startSoname) {
+    const unresolved = new Set();
+    const visited = new Set();
+    const queue = [startSoname];
+    while (queue.length) {
+      const cur = queue.shift();
+      if (visited.has(cur)) continue;
+      visited.add(cur);
+      const node = allNodes[cur];
+      if (!node) continue;
+      for (const u of (node.unresolved || [])) unresolved.add(u);
+      for (const dep of node.deps) queue.push(dep);
+    }
+    return unresolved;
+  }
+
+  // Build host edges into the separate hostElements array.
+  const hostEdgeSet = new Set();
+  function addHostEdge(src, tgt) {
+    const ek = src + '->' + tgt;
+    if (hostEdgeSet.has(ek)) return;
+    hostEdgeSet.add(ek);
+    hostElements.push({ group: 'edges', data: { source: src, target: tgt } });
+  }
+
+  for (const soname of individualNodes) {
+    for (const u of collectTransitiveUnresolved(soname)) {
+      addHostEdge('host_' + u, soname);
+    }
+  }
+  for (const [clusterId, cluster] of Object.entries(clusters)) {
+    const clusterUnresolved = new Set();
+    for (const member of cluster.members) {
+      for (const u of collectTransitiveUnresolved(member)) clusterUnresolved.add(u);
+    }
+    for (const u of clusterUnresolved) {
+      addHostEdge('host_' + u, clusterId);
     }
   }
 
@@ -1454,6 +1524,33 @@ const DATA = {{ graph_data|safe }};
     });
   }
 
+  function showHostDetail(soname) {
+    const panel = document.getElementById('detail');
+    let html = '<h3 style="color:#fb4934">' + escHtml(soname) + '</h3>';
+    html += '<dl><dt>Type</dt><dd style="color:#fb4934">Host / unresolved</dd>';
+    html += '<dt>Description</dt><dd>This shared library is not present in the container image. It must be provided by the host system at runtime (e.g. GPU driver, system library).</dd></dl>';
+    // Find all nodes that depend on this
+    const dependants = [];
+    for (const [name, node] of Object.entries(allNodes)) {
+      if ((node.unresolved || []).includes(soname)) dependants.push(name);
+    }
+    if (dependants.length) {
+      html += '<div class="dep-section-header">Required by (' + dependants.length + ')</div>';
+      html += '<table class="dep-table">';
+      for (const dep of dependants.sort()) {
+        const dn = allNodes[dep];
+        const cc = dn ? ccBarHTML(dn.cubins, dn.ptx) : '';
+        html += '<tr><td><span class="dep-link" data-dep="' + escHtml(dep) + '">' + escHtml(dep) + '</span></td><td>' + cc + '</td></tr>';
+      }
+      html += '</table>';
+    }
+    panel.innerHTML = html;
+    panel.classList.add('open');
+    panel.querySelectorAll('.dep-link').forEach(link => {
+      link.addEventListener('click', () => showDetail(link.dataset.dep));
+    });
+  }
+
   // ---- cytoscape ----
 
   const cy = cytoscape({
@@ -1500,13 +1597,26 @@ const DATA = {{ graph_data|safe }};
         },
       },
       {
+        selector: 'node[type="host"]',
+        style: {
+          'label': '',
+          'background-color': '#3c3836',
+          'shape': 'round-rectangle',
+          'width': 'data(nodeWidth)',
+          'height': 'data(nodeHeight)',
+          'border-width': 2,
+          'border-color': '#cc241d',
+          'border-style': 'dashed',
+        },
+      },
+      {
         selector: 'edge',
         style: {
           'width': 1.5,
           'line-color': '#bdae93',
           'target-arrow-color': '#7c6f64',
           'target-arrow-shape': 'triangle',
-          'curve-style': 'bezier',
+          'curve-style': 'unbundled-bezier',
           'arrow-scale': 0.8,
           'opacity': 0.6,
         },
@@ -1587,6 +1697,19 @@ const DATA = {{ graph_data|safe }};
       },
     },
     {
+      query: 'node[type="host"]',
+      halign: 'center',
+      valign: 'center',
+      cssClass: '',
+      tpl: function(data) {
+        let html = '<div class="cy-node-label">';
+        html += '<div class="cy-node-name" style="color:#fb4934">' + escHtml(data.soname) + '</div>';
+        html += '<div style="font-size:6px;color:#cc241d;text-align:center">host / unresolved</div>';
+        html += '</div>';
+        return html;
+      },
+    },
+    {
       query: 'node[type="cluster"]',
       halign: 'center',
       valign: 'center',
@@ -1623,6 +1746,8 @@ const DATA = {{ graph_data|safe }};
     const d = node.data();
     if (d.type === 'cluster') {
       showClusterDetail(d.id);
+    } else if (d.type === 'host') {
+      showHostDetail(d.soname);
     } else {
       showDetail(d.id);
     }
@@ -1709,6 +1834,24 @@ const DATA = {{ graph_data|safe }};
   });
   document.getElementById('zoom-out').addEventListener('click', () => {
     cy.zoom({ level: cy.zoom() / 1.3, renderedPosition: { x: cy.width() / 2, y: cy.height() / 2 } });
+  });
+
+  // ---- Host deps toggle ----
+  let hostVisible = false;
+  const hostBtn = document.getElementById('toggle-host');
+  hostBtn.addEventListener('click', () => {
+    hostVisible = !hostVisible;
+    if (hostVisible) {
+      cy.add(hostElements);
+      hostBtn.style.borderColor = '#cc241d';
+      hostBtn.style.color = '#fb4934';
+    } else {
+      cy.remove('node[type="host"]');
+      hostBtn.style.borderColor = '';
+      hostBtn.style.color = '';
+    }
+    cy.layout({ name: 'dagre', rankDir: 'LR', nodeSep: 40, rankSep: 80, edgeSep: 15, padding: 40 }).run();
+    cy.fit(undefined, 30);
   });
 
   // ---- SM filter bar ----
