@@ -1,7 +1,10 @@
+#![allow(dead_code)]
+
 mod cache;
 mod diff;
 mod discover;
 mod fatbin;
+mod graph_view;
 mod html;
 mod image;
 mod nvidia;

@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
 use crate::diff::OgContext;
+use crate::graph_view::GraphView;
 use crate::scan::ScanResult;
 use crate::style::{self, BundleMode};
 use crate::templates;
@@ -48,6 +49,8 @@ struct HtmlData<'a> {
     env_vars: &'a [(String, String)],
     /// Build history: layer index to Dockerfile command mapping.
     layer_history: &'a [crate::scan::LayerInfo],
+    /// Pre-computed graph view (renderer-agnostic, replaces JS graph processing).
+    graph_view: GraphView,
 }
 
 /// Render the scan result as an interactive HTML page.
@@ -105,6 +108,12 @@ pub fn render_html_with_og(
         nodes: HashMap::new(),
     };
 
+    let graph_view = result
+        .dep_graph
+        .as_ref()
+        .map(crate::graph_view::build_graph_view)
+        .unwrap_or_else(GraphView::empty);
+
     let data = HtmlData {
         image: &result.image,
         metadata: &result.metadata,
@@ -126,6 +135,7 @@ pub fn render_html_with_og(
         labels: &result.labels,
         env_vars: &result.env_vars,
         layer_history: &result.layer_history,
+        graph_view,
     };
 
     let json = serde_json::to_string(&data).unwrap_or_else(|e| format!("{{\"error\": \"{e}\"}}"));

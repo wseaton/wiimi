@@ -636,6 +636,7 @@
       <button class="graph-btn" id="zoom-in">+</button>
       <button class="graph-btn" id="zoom-out">-</button>
       <button class="graph-btn" id="toggle-host" title="Show/hide unresolved host dependencies">Host deps</button>
+      <button class="graph-btn" id="toggle-all" title="Show/hide non-CUDA nodes (libraries without GPU code)">All nodes</button>
     </div>
     <div class="legend">
       <div class="legend-item"><div class="legend-swatch" style="background:#b16286"></div> Maxwell</div>
@@ -765,263 +766,112 @@ const DATA = {{ graph_data|safe }};
     return h;
   }
 
-  // ---- build cytoscape graph ----
-  //
-  // Strategy:
-  //  1. Show ALL CUDA nodes
-  //  2. Show non-CUDA "bridge" nodes (on a path between two CUDA nodes)
-  //  3. Auto-collapse large homogeneous groups (same dir + same CC profile, >25 members)
-  //  4. Click-to-expand on collapsed groups
-
+  // ---- build cytoscape graph from pre-computed GraphView ----
   const allNodes = graph.nodes;
-  const COLLAPSE_THRESHOLD = 25;
+  const gv = DATA.graph_view;
 
-  // Step 1: identify all visible nodes
-  const visibleNodes = new Set();
-
-  // All CUDA nodes are visible
-  for (const [soname, node] of Object.entries(allNodes)) {
-    if (hasCuda(node)) visibleNodes.add(soname);
-  }
-
-  // Bridge non-CUDA nodes: depended on by a CUDA node AND depends on a CUDA node
-  for (const [soname, node] of Object.entries(allNodes)) {
-    if (hasCuda(node)) continue;
-    const hasCudaDependent = node.deps.some(d => allNodes[d] && hasCuda(allNodes[d]));
-    if (!hasCudaDependent) continue;
-    // Check if any CUDA node depends on this one
-    for (const [other, otherNode] of Object.entries(allNodes)) {
-      if (hasCuda(otherNode) && otherNode.deps.includes(soname)) {
-        visibleNodes.add(soname);
-        break;
-      }
-    }
-  }
-
-  // Step 2: group visible nodes by (directory, CC profile) for auto-collapse
-  function dirKey(path) {
-    const parts = path.split('/');
-    let spIdx = parts.indexOf('site-packages');
-    if (spIdx < 0) spIdx = parts.indexOf('dist-packages');
-    if (spIdx >= 0 && spIdx + 1 < parts.length) return parts[spIdx + 1];
-    if (parts.length >= 2) return parts[parts.length - 2];
-    return '/';
-  }
-
-  const groupMap = {};  // "dir|ccKey" → [sonames]
-  for (const soname of visibleNodes) {
-    const node = allNodes[soname];
-    if (!node) continue;
-    const gk = dirKey(node.path) + '|' + ccKey(node.cubins, node.ptx);
-    if (!groupMap[gk]) groupMap[gk] = [];
-    groupMap[gk].push(soname);
-  }
-
-  // Step 3: decide which nodes are individual vs collapsed
-  const individualNodes = new Set();
-  const clusters = {};       // clusterId → { key, ccProfile, members[], cubinVals[], ptxVals[], label }
-  const nodeToCluster = {};  // soname → clusterId
-
-  for (const [gk, members] of Object.entries(groupMap)) {
-    if (members.length > COLLAPSE_THRESHOLD) {
-      const [dir] = gk.split('|');
-      const clusterId = 'cluster_' + gk.replace(/[^a-zA-Z0-9]/g, '_');
-      const sample = allNodes[members[0]];
-      const cubinVals = sample ? sample.cubins.map(smVal).sort((a,b) => a-b) : [];
-      const ptxVals = sample ? sample.ptx.map(smVal).sort((a,b) => a-b) : [];
-      clusters[clusterId] = {
-        id: clusterId,
-        key: dir,
-        ccProfile: gk.split('|')[1],
-        members: members,
-        cubinVals: cubinVals,
-        ptxVals: ptxVals,
-        label: members.length + ' in ' + dir,
-      };
-      for (const m of members) nodeToCluster[m] = clusterId;
-    } else {
-      for (const m of members) individualNodes.add(m);
-    }
-  }
-
-  // Step 4: build cytoscape elements
-  function nodeSize(soname, node) {
-    const chipCount = (node.cubins ? node.cubins.length : 0) + (node.ptx ? node.ptx.length : 0);
-    const chipsPerRow = 5;
-    const chipRows = chipCount > 0 ? Math.ceil(chipCount / chipsPerRow) : 0;
-    const pkgExtra = node.package ? 10 : 0;
-    const nameWidth = soname.length * 7 + 16;
-    const chipWidth = Math.min(chipCount, chipsPerRow) * 42 + 12;
-    return {
-      w: Math.max(nameWidth, chipWidth, 90),
-      h: Math.max(20 + chipRows * 16 + pkgExtra, 24),
-    };
+  // Adapter: generic GraphView -> Cytoscape elements
+  function nodeSize(id, cubins, ptx, pkg) {
+    const chips = (cubins ? cubins.length : 0) + (ptx ? ptx.length : 0);
+    const rows = chips > 0 ? Math.ceil(chips / 5) : 0;
+    const nw = id.length * 7 + 16;
+    const cw = Math.min(chips, 5) * 42 + 12;
+    return { w: Math.max(nw, cw, 90), h: Math.max(20 + rows * 16 + (pkg ? 10 : 0), 24) };
   }
 
   const cyElements = [];
+  const individualNodes = new Set();
+  const nodeToCluster = gv.nodeToCluster;
 
-  // Individual nodes
-  for (const soname of individualNodes) {
-    const node = allNodes[soname];
-    if (!node) continue;
-    const sz = nodeSize(soname, node);
-    cyElements.push({
-      data: {
-        id: soname,
-        label: '',
-        type: hasCuda(node) ? 'individual' : 'bridge',
-        nodeWidth: sz.w,
-        nodeHeight: sz.h,
-        priority: node.priority,
-        path: node.path,
-        cubins: node.cubins,
-        ptx: node.ptx,
-        size: node.size,
-        deps: node.deps,
-        unresolved: node.unresolved,
-        package: node.package || null,
-      },
-    });
+  for (const n of gv.nodes) {
+    individualNodes.add(n.id);
+    const sz = nodeSize(n.id, n.cubins, n.ptx, n.package);
+    cyElements.push({ data: {
+      id: n.id, label: '', type: n.role === 'cuda' ? 'individual' : 'bridge',
+      nodeWidth: sz.w, nodeHeight: sz.h, priority: n.priority, path: n.path,
+      cubins: n.cubins, ptx: n.ptx, size: n.size, deps: n.deps,
+      unresolved: n.unresolved, package: n.package || null,
+    }});
   }
 
-  // Cluster nodes
-  for (const [clusterId, cluster] of Object.entries(clusters)) {
-    const chipCount = cluster.cubinVals.length + cluster.ptxVals.length;
-    const chipsPerRow = 5;
-    const chipRows = chipCount > 0 ? Math.ceil(chipCount / chipsPerRow) : 0;
-    const labelWidth = cluster.label.length * 7 + 16;
-    const chipWidth = Math.min(chipCount, chipsPerRow) * 42 + 12;
-    cyElements.push({
-      data: {
-        id: clusterId,
-        label: '',
-        type: 'cluster',
-        nodeWidth: Math.max(labelWidth, chipWidth, 100),
-        nodeHeight: 20 + chipRows * 16,
-        memberCount: cluster.members.length,
-        members: cluster.members,
-        dirKey: cluster.key,
-        clusterLabel: cluster.label,
-        cubinVals: cluster.cubinVals,
-        ptxVals: cluster.ptxVals,
-      },
-    });
+  const clusters = {};
+  for (const c of gv.clusters) {
+    clusters[c.id] = c;
+    const chips = (c.cubinVals ? c.cubinVals.length : 0) + (c.ptxVals ? c.ptxVals.length : 0);
+    const rows = chips > 0 ? Math.ceil(chips / 5) : 0;
+    const lw = c.label.length * 7 + 16;
+    const cw = Math.min(chips, 5) * 42 + 12;
+    cyElements.push({ data: {
+      id: c.id, label: '', type: 'cluster',
+      nodeWidth: Math.max(lw, cw, 100), nodeHeight: 20 + rows * 16,
+      memberCount: c.members.length, members: c.members,
+      dirKey: c.dirKey, clusterLabel: c.label,
+      cubinVals: c.cubinVals, ptxVals: c.ptxVals,
+    }});
   }
 
-  // Step 4b: collect unresolved (host) dependencies as synthetic nodes.
-  // Scan ALL graph nodes so we capture deps from non-visible binaries too.
-  const hostNodes = new Set();
-  for (const [, node] of Object.entries(allNodes)) {
-    for (const u of (node.unresolved || [])) hostNodes.add(u);
-  }
-
-  // Host elements are stored separately and added/removed by the toggle.
-  const hostElements = [];
-  for (const soname of hostNodes) {
-    const nameWidth = soname.length * 7 + 16;
-    hostElements.push({
-      group: 'nodes',
-      data: {
-        id: 'host_' + soname,
-        label: '',
-        type: 'host',
-        nodeWidth: Math.max(nameWidth, 90),
-        nodeHeight: 24,
-        soname: soname,
-      },
-    });
-  }
-
-  // Step 5: build edges (arrows point dependency → dependent)
   const edgeSet = new Set();
-
-  function addEdge(src, tgt) {
-    const ek = src + '->' + tgt;
-    if (edgeSet.has(ek)) return;
-    edgeSet.add(ek);
-    cyElements.push({ data: { source: src, target: tgt } });
+  for (const e of gv.edges) {
+    edgeSet.add(e.source + '->' + e.target);
+    cyElements.push({ data: { source: e.source, target: e.target }});
   }
 
-  // Edges between individual nodes
+  const hostElements = [];
+  for (const h of gv.hostNodes) {
+    const nw = h.soname.length * 7 + 16;
+    hostElements.push({ group: 'nodes', data: {
+      id: h.id, label: '', type: 'host',
+      nodeWidth: Math.max(nw, 90), nodeHeight: 24, soname: h.soname,
+    }});
+  }
+  for (const e of gv.hostEdges) {
+    hostElements.push({ group: 'edges', data: { source: e.source, target: e.target }});
+  }
+
+  // ---- build "all nodes" elements for non-CUDA, non-bridge nodes ----
+  const allNodeElements = [];
+  const hiddenNodeIds = new Set();
+  for (const [soname, node] of Object.entries(allNodes)) {
+    if (individualNodes.has(soname) || nodeToCluster[soname]) continue;
+    hiddenNodeIds.add(soname);
+    const nw = soname.length * 7 + 16;
+    allNodeElements.push({ group: 'nodes', data: {
+      id: soname, label: '', type: 'plain',
+      nodeWidth: Math.max(nw, 90), nodeHeight: 24,
+      priority: node.priority, path: node.path,
+      cubins: node.cubins, ptx: node.ptx,
+      size: node.size, deps: node.deps,
+      unresolved: node.unresolved, package: node.package || null,
+    }});
+  }
+  // Edges involving hidden nodes (only added when "all nodes" is active)
+  const allNodeEdgeSet = new Set();
+  for (const soname of hiddenNodeIds) {
+    const node = allNodes[soname];
+    if (!node) continue;
+    for (const dep of node.deps) {
+      // Edge from dep to soname (dep -> dependent)
+      const src = nodeToCluster[dep] || dep;
+      const tgt = soname;
+      const ek = src + '->' + tgt;
+      if (allNodeEdgeSet.has(ek)) continue;
+      allNodeEdgeSet.add(ek);
+      // Only add edge if at least one end is a hidden node or already in the graph
+      if (hiddenNodeIds.has(dep) || individualNodes.has(dep) || nodeToCluster[dep]) {
+        allNodeElements.push({ group: 'edges', data: { source: src, target: tgt }});
+      }
+    }
+  }
+  // Also add edges from visible nodes to hidden deps
   for (const soname of individualNodes) {
     const node = allNodes[soname];
     if (!node) continue;
     for (const dep of node.deps) {
-      if (individualNodes.has(dep)) {
-        addEdge(dep, soname);
-      }
-    }
-  }
-
-  // Edges involving clusters
-  for (const [clusterId, cluster] of Object.entries(clusters)) {
-    const seenDeps = new Set();
-    for (const member of cluster.members) {
-      const node = allNodes[member];
-      if (!node) continue;
-      for (const dep of node.deps) {
-        if (seenDeps.has(dep)) continue;
-        seenDeps.add(dep);
-        if (individualNodes.has(dep)) {
-          addEdge(dep, clusterId);
-        } else if (nodeToCluster[dep] && nodeToCluster[dep] !== clusterId) {
-          addEdge(nodeToCluster[dep], clusterId);
-        }
-      }
-    }
-  }
-
-  // Edges from individual nodes to clusters they depend on
-  for (const soname of individualNodes) {
-    const node = allNodes[soname];
-    if (!node) continue;
-    for (const dep of node.deps) {
-      if (nodeToCluster[dep]) {
-        addEdge(nodeToCluster[dep], soname);
-      }
-    }
-  }
-
-  // Edges from host (unresolved) nodes to visible dependants.
-  // Walk DOWN from each visible node through transitive deps, collecting
-  // which unresolved host libs it transitively needs.
-  function collectTransitiveUnresolved(startSoname) {
-    const unresolved = new Set();
-    const visited = new Set();
-    const queue = [startSoname];
-    while (queue.length) {
-      const cur = queue.shift();
-      if (visited.has(cur)) continue;
-      visited.add(cur);
-      const node = allNodes[cur];
-      if (!node) continue;
-      for (const u of (node.unresolved || [])) unresolved.add(u);
-      for (const dep of node.deps) queue.push(dep);
-    }
-    return unresolved;
-  }
-
-  // Build host edges into the separate hostElements array.
-  const hostEdgeSet = new Set();
-  function addHostEdge(src, tgt) {
-    const ek = src + '->' + tgt;
-    if (hostEdgeSet.has(ek)) return;
-    hostEdgeSet.add(ek);
-    hostElements.push({ group: 'edges', data: { source: src, target: tgt } });
-  }
-
-  for (const soname of individualNodes) {
-    for (const u of collectTransitiveUnresolved(soname)) {
-      addHostEdge('host_' + u, soname);
-    }
-  }
-  for (const [clusterId, cluster] of Object.entries(clusters)) {
-    const clusterUnresolved = new Set();
-    for (const member of cluster.members) {
-      for (const u of collectTransitiveUnresolved(member)) clusterUnresolved.add(u);
-    }
-    for (const u of clusterUnresolved) {
-      addHostEdge('host_' + u, clusterId);
+      if (!hiddenNodeIds.has(dep)) continue;
+      const ek = dep + '->' + soname;
+      if (allNodeEdgeSet.has(ek)) continue;
+      allNodeEdgeSet.add(ek);
+      allNodeElements.push({ group: 'edges', data: { source: dep, target: soname }});
     }
   }
 
@@ -1031,15 +881,12 @@ const DATA = {{ graph_data|safe }};
     const cluster = clusters[clusterId];
     if (!cluster) return;
 
-    // Get the cluster node position before removing it
     const clusterNode = cy.getElementById(clusterId);
     if (!clusterNode.length) return;
     const pos = clusterNode.position();
 
-    // Remove the cluster node (and its edges)
     cy.remove(clusterNode);
 
-    // Add individual member nodes in a grid around where the cluster was
     const members = cluster.members;
     const cols = Math.ceil(Math.sqrt(members.length));
     const spacing = 120;
@@ -1051,23 +898,17 @@ const DATA = {{ graph_data|safe }};
       if (!node) continue;
       const row = Math.floor(i / cols);
       const col = i % cols;
-      const sz = nodeSize(soname, node);
+      const sz = nodeSize(soname, node.cubins, node.ptx, node.package);
       newElements.push({
         group: 'nodes',
         data: {
-          id: soname,
-          label: '',
+          id: soname, label: '',
           type: hasCuda(node) ? 'individual' : 'bridge',
-          nodeWidth: sz.w,
-          nodeHeight: sz.h,
-          priority: node.priority,
-          path: node.path,
-          cubins: node.cubins,
-          ptx: node.ptx,
-          size: node.size,
-          deps: node.deps,
-          unresolved: node.unresolved,
-          package: node.package || null,
+          nodeWidth: sz.w, nodeHeight: sz.h,
+          priority: node.priority, path: node.path,
+          cubins: node.cubins, ptx: node.ptx,
+          size: node.size, deps: node.deps,
+          unresolved: node.unresolved, package: node.package || null,
         },
         position: {
           x: pos.x + (col - cols / 2) * spacing,
@@ -1075,15 +916,12 @@ const DATA = {{ graph_data|safe }};
         },
       });
 
-      // Move from cluster tracking to individual
       individualNodes.add(soname);
       delete nodeToCluster[soname];
     }
 
-    // Add the new nodes
     cy.add(newElements);
 
-    // Now add edges for the new nodes
     const newEdges = [];
     for (const soname of members) {
       const node = allNodes[soname];
@@ -1105,7 +943,6 @@ const DATA = {{ graph_data|safe }};
           }
         }
       }
-      // Also connect other individual nodes that depend on this member
       for (const otherSoname of individualNodes) {
         if (otherSoname === soname) continue;
         const otherNode = allNodes[otherSoname];
@@ -1121,19 +958,15 @@ const DATA = {{ graph_data|safe }};
     }
     cy.add(newEdges);
 
-    // Clean up cluster record
     delete clusters[clusterId];
 
-    // Re-run layout on just the new elements for a clean arrangement
     const addedIds = members.filter(m => cy.getElementById(m).length);
     if (addedIds.length > 0) {
       const addedEles = cy.collection();
       for (const id of addedIds) addedEles.merge(cy.getElementById(id));
-      // Run a local grid layout then animate to fit
       cy.fit(undefined, 40);
     }
 
-    // Re-render sidebar to show expanded nodes
     renderProfiles();
     renderList();
   }
@@ -1147,13 +980,7 @@ const DATA = {{ graph_data|safe }};
     }
   }
 
-  // ---- collect all SM values present in the graph for the filter bar ----
-  const allSmValues = new Set();
-  for (const [_, node] of Object.entries(allNodes)) {
-    for (const c of node.cubins) allSmValues.add(smVal(c));
-    for (const p of node.ptx) allSmValues.add(smVal(p));
-  }
-  const sortedSmValues = [...allSmValues].sort((a, b) => a - b);
+  const sortedSmValues = gv.smValues;
   let activeSmFilter = null; // null = no filter
 
   // ---- header ----
@@ -1597,6 +1424,20 @@ const DATA = {{ graph_data|safe }};
         },
       },
       {
+        selector: 'node[type="plain"]',
+        style: {
+          'label': '',
+          'background-color': '#504945',
+          'shape': 'round-rectangle',
+          'width': 'data(nodeWidth)',
+          'height': 'data(nodeHeight)',
+          'border-width': 1,
+          'border-color': '#665c54',
+          'border-style': 'dotted',
+          'opacity': 0.7,
+        },
+      },
+      {
         selector: 'node[type="host"]',
         style: {
           'label': '',
@@ -1697,6 +1538,18 @@ const DATA = {{ graph_data|safe }};
       },
     },
     {
+      query: 'node[type="plain"]',
+      halign: 'center',
+      valign: 'center',
+      cssClass: '',
+      tpl: function(data) {
+        let html = '<div class="cy-node-label">';
+        html += '<div class="cy-node-name" style="color:#a89984">' + escHtml(data.id) + '</div>';
+        html += '</div>';
+        return html;
+      },
+    },
+    {
       query: 'node[type="host"]',
       halign: 'center',
       valign: 'center',
@@ -1770,11 +1623,12 @@ const DATA = {{ graph_data|safe }};
     const node = evt.target;
     const d = node.data();
     const lines = [d.id];
-    if (d.type === 'individual' || d.type === 'bridge') {
+    if (d.type === 'individual' || d.type === 'bridge' || d.type === 'plain') {
       if (d.path) lines.push(d.path);
       if (d.size > 0) lines.push('Size: ' + formatSize(d.size));
       if (d.priority) lines.push('Type: ' + d.priority);
       if (d.type === 'bridge') lines.push('(bridge: no CUDA, connects CUDA nodes)');
+      if (d.type === 'plain') lines.push('(no CUDA code)');
       if (d.cubins && d.cubins.length) lines.push('SASS: ' + d.cubins.map(c => 'sm_'+smVal(c)).join(', '));
       if (d.ptx && d.ptx.length) lines.push('PTX: ' + d.ptx.map(c => 'sm_'+smVal(c)).join(', '));
       if (d.deps && d.deps.length) lines.push('Deps: ' + d.deps.length);
@@ -1849,6 +1703,24 @@ const DATA = {{ graph_data|safe }};
       cy.remove('node[type="host"]');
       hostBtn.style.borderColor = '';
       hostBtn.style.color = '';
+    }
+    cy.layout({ name: 'dagre', rankDir: 'LR', nodeSep: 40, rankSep: 80, edgeSep: 15, padding: 40 }).run();
+    cy.fit(undefined, 30);
+  });
+
+  // ---- All nodes toggle ----
+  let allNodesVisible = false;
+  const allBtn = document.getElementById('toggle-all');
+  allBtn.addEventListener('click', () => {
+    allNodesVisible = !allNodesVisible;
+    if (allNodesVisible) {
+      cy.add(allNodeElements);
+      allBtn.style.borderColor = '#458588';
+      allBtn.style.color = '#83a598';
+    } else {
+      cy.remove('node[type="plain"]');
+      allBtn.style.borderColor = '';
+      allBtn.style.color = '';
     }
     cy.layout({ name: 'dagre', rankDir: 'LR', nodeSep: 40, rankSep: 80, edgeSep: 15, padding: 40 }).run();
     cy.fit(undefined, 30);
