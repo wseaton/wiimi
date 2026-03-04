@@ -1034,14 +1034,6 @@ const DATA = {{ graph_data|safe }};
       if (envRow.children.length > 0) h.appendChild(envRow);
     }
 
-    for (const w of DATA.warnings) {
-      // Only surface critical diagnostics here; soname collisions live in Insights
-      if (w.startsWith('soname collision:')) continue;
-      const warn = document.createElement('div');
-      warn.style.cssText = 'color:var(--red);font-size:11px;margin-top:4px;';
-      warn.textContent = w;
-      h.appendChild(warn);
-    }
   }
 
   // ---- sidebar: graph nodes panel ----

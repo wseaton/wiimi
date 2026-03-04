@@ -1221,9 +1221,8 @@ pub async fn scan_image(
     let dormant_count = total_cuda - reachable_count;
 
     // Compute effective range using only reachable CUDA binaries
-    let (effective_cc_min, effective_cc_max, has_ptx, mut warnings) =
-        compute_effective_range(&reachable_cuda);
-    warnings.extend(collision_warnings);
+    let range = compute_effective_range(&reachable_cuda);
+    let warnings = collision_warnings;
 
     // Build layer history from OCI config
     let history = image::parse_history(&config_json);
@@ -1241,9 +1240,9 @@ pub async fn scan_image(
         image: image_str.to_string(),
         metadata,
         binaries: scan_results,
-        effective_cc_min,
-        effective_cc_max,
-        has_ptx_forward_compat: has_ptx,
+        effective_cc_min: range.cc_min,
+        effective_cc_max: range.cc_max,
+        has_ptx_forward_compat: range.has_ptx,
         warnings,
         dep_graph: Some(dep_graph),
         reachable_count,
@@ -1398,28 +1397,30 @@ fn scan_single_binary(
     })
 }
 
+/// The effective compute-capability range across all scanned binaries.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EffectiveRange {
+    /// Most restrictive floor: max of all per-binary minimums.
+    pub cc_min: Option<ComputeCapability>,
+    /// Most restrictive ceiling: min of all per-binary maximums (only cubin-only binaries).
+    pub cc_max: Option<ComputeCapability>,
+    /// Whether any binary ships PTX for forward compatibility.
+    pub has_ptx: bool,
+}
+
 /// Compute the effective CC range across all scanned binaries.
 ///
-/// `effective_cc_min` = max of all per-binary minimums (the most restrictive component).
-/// `effective_cc_max` = min of all per-binary maximums, unless any binary has PTX.
-pub fn compute_effective_range(
-    binaries: &[BinaryScanResult],
-) -> (
-    Option<ComputeCapability>,
-    Option<ComputeCapability>,
-    bool,
-    Vec<String>,
-) {
+/// `cc_min` = max of all per-binary minimums (the most restrictive component).
+/// `cc_max` = min of all per-binary maximums, unless any binary has PTX.
+pub fn compute_effective_range(binaries: &[BinaryScanResult]) -> EffectiveRange {
     if binaries.is_empty() {
-        return (
-            None,
-            None,
-            false,
-            vec!["no CUDA binaries found".to_string()],
-        );
+        return EffectiveRange {
+            cc_min: None,
+            cc_max: None,
+            has_ptx: false,
+        };
     }
 
-    let mut warnings = Vec::new();
     let mut global_min: Option<ComputeCapability> = None;
     let mut global_max: Option<ComputeCapability> = None;
     let mut any_ptx = false;
@@ -1449,16 +1450,11 @@ pub fn compute_effective_range(
         }
     }
 
-    // Warn if the range is inverted (some binary has a max cubin below another's min)
-    if let (Some(min), Some(max)) = (global_min, global_max) {
-        if min > max {
-            warnings.push(format!(
-                "inverted range: cc_min ({min}) > cc_max ({max}), some binary may have stale/stub cubins"
-            ));
-        }
+    EffectiveRange {
+        cc_min: global_min,
+        cc_max: global_max,
+        has_ptx: any_ptx,
     }
-
-    (global_min, global_max, any_ptx, warnings)
 }
 
 /// Threshold at which we write detailed results to a file.
@@ -1985,10 +1981,10 @@ mod tests {
             vec![],
             vec![],
         )];
-        let (min, max, has_ptx, _) = compute_effective_range(&binaries);
-        assert_eq!(min, Some(cc(7, 0)));
-        assert_eq!(max, Some(cc(9, 0)));
-        assert!(!has_ptx);
+        let r = compute_effective_range(&binaries);
+        assert_eq!(r.cc_min, Some(cc(7, 0)));
+        assert_eq!(r.cc_max, Some(cc(9, 0)));
+        assert!(!r.has_ptx);
     }
 
     #[test]
@@ -2000,10 +1996,10 @@ mod tests {
             vec![cc(12, 0)],
             vec![],
         )];
-        let (min, max, has_ptx, _) = compute_effective_range(&binaries);
-        assert_eq!(min, Some(cc(7, 0)));
-        assert_eq!(max, None);
-        assert!(has_ptx);
+        let r = compute_effective_range(&binaries);
+        assert_eq!(r.cc_min, Some(cc(7, 0)));
+        assert_eq!(r.cc_max, None);
+        assert!(r.has_ptx);
     }
 
     #[test]
@@ -2024,19 +2020,18 @@ mod tests {
                 vec![],
             ),
         ];
-        let (min, max, has_ptx, _) = compute_effective_range(&binaries);
-        assert_eq!(min, Some(cc(9, 0)));
-        assert_eq!(max, Some(cc(10, 0)));
-        assert!(has_ptx);
+        let r = compute_effective_range(&binaries);
+        assert_eq!(r.cc_min, Some(cc(9, 0)));
+        assert_eq!(r.cc_max, Some(cc(10, 0)));
+        assert!(r.has_ptx);
     }
 
     #[test]
     fn effective_range_empty() {
-        let (min, max, has_ptx, warnings) = compute_effective_range(&[]);
-        assert_eq!(min, None);
-        assert_eq!(max, None);
-        assert!(!has_ptx);
-        assert!(!warnings.is_empty());
+        let r = compute_effective_range(&[]);
+        assert_eq!(r.cc_min, None);
+        assert_eq!(r.cc_max, None);
+        assert!(!r.has_ptx);
     }
 
     #[test]
@@ -2048,10 +2043,10 @@ mod tests {
             vec![cc(7, 0)],
             vec![],
         )];
-        let (min, max, has_ptx, _) = compute_effective_range(&binaries);
-        assert_eq!(min, Some(cc(7, 0)));
-        assert_eq!(max, None);
-        assert!(has_ptx);
+        let r = compute_effective_range(&binaries);
+        assert_eq!(r.cc_min, Some(cc(7, 0)));
+        assert_eq!(r.cc_max, None);
+        assert!(r.has_ptx);
     }
 
     // -- dependency graph building --
@@ -2428,7 +2423,7 @@ mod tests {
             effective_cc_min: None,
             effective_cc_max: None,
             has_ptx_forward_compat: false,
-            warnings: vec!["no CUDA binaries found".to_string()],
+            warnings: vec![],
             dep_graph: None,
             reachable_count: 0,
             dormant_count: 0,
