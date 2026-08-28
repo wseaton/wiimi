@@ -175,15 +175,16 @@
 {% for family in families %}
 <div class="family-section" data-family-idx="{{ family.idx }}">
   <h2 class="family-name">{{ family.name }}</h2>
-  <p class="family-subtitle">{{ family.subtitle }}</p>
+  <p class="family-subtitle" title="tag pattern: {{ family.pattern }}">{{ family.subtitle }}</p>
   <table class="scan-table">
     <thead>
       <tr>
         <th>Image</th>
         <th>CUDA</th>
         <th>SM Range</th>
-        <th>PTX</th>
-        <th>Binaries</th>
+        <th>Architectures</th>
+{% if show_ptx %}        <th>PTX</th>
+{% endif %}        <th>Binaries</th>
       </tr>
     </thead>
     <tbody>
@@ -191,9 +192,10 @@
       <tr>
         <td><a href="scan/{{ scan.slug }}.html">{{ scan.short_name }}</a></td>
         <td>{{ scan.cuda }}</td>
-        <td>{{ scan.cc_range }}</td>
-        <td class="{{ scan.ptx_class }}">{{ scan.ptx_label }}</td>
-        <td>{{ scan.bin_count }}</td>
+        <td{% if scan.cc_note %} class="cc-flagged" title="{{ scan.cc_note }}"{% endif %}>{{ scan.cc_range }}{% if scan.cc_note %} <span class="cc-flag">!</span>{% endif %}</td>
+        <td>{{ scan.cc_bar|safe }}</td>
+{% if show_ptx %}        <td class="{{ scan.ptx_class }}">{{ scan.ptx_label }}</td>
+{% endif %}        <td>{{ scan.bin_count }}</td>
       </tr>
 {% endfor %}
     </tbody>

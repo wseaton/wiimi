@@ -6,6 +6,7 @@ use serde::Deserialize;
 
 use crate::diff;
 use crate::html;
+use crate::nvidia::ComputeCapability;
 use crate::og;
 use crate::scan::ScanResult;
 use crate::store::ScanStore;
@@ -171,6 +172,8 @@ struct IndexScanRow {
     short_name: String,
     cuda: String,
     cc_range: String,
+    cc_note: String,
+    cc_bar: String,
     ptx_class: &'static str,
     ptx_label: &'static str,
     bin_count: usize,
@@ -182,26 +185,96 @@ struct IndexFamily {
     idx: usize,
     name: String,
     subtitle: String,
+    /// The tag regex, shown on hover rather than printed into the page.
+    pattern: String,
     scans: Vec<IndexScanRow>,
+}
+
+/// `sm_NN` value for a compute capability, e.g. 9.0 -> 90.
+fn sm_value(cc: &ComputeCapability) -> u32 {
+    cc.major * 10 + cc.minor
+}
+
+/// Every distinct `sm` value that appears anywhere in the catalog, sorted.
+///
+/// The index draws one cell per value from this shared scale so rows line up
+/// and can be compared down the column. A per-scan scale would put different
+/// architectures in the same position on different rows.
+fn catalog_sm_scale(all: &[&ScanResult]) -> Vec<u32> {
+    let mut vals: Vec<u32> = all
+        .iter()
+        .flat_map(|s| s.binaries.iter())
+        .flat_map(|b| b.cubins.iter().chain(b.ptx.iter()))
+        .map(sm_value)
+        .collect();
+    vals.sort_unstable();
+    vals.dedup();
+    vals
+}
+
+fn sm_gen_class(sm: u32) -> &'static str {
+    match sm {
+        ..50 => "g-legacy",
+        50..60 => "g-maxwell",
+        60..70 => "g-pascal",
+        70..80 => "g-volta",
+        80..90 => "g-ampere",
+        90..100 => "g-hopper",
+        _ => "g-blackwell",
+    }
+}
+
+/// Render the shared-scale capability strip for one scan.
+fn cc_bar_html(scan: &ScanResult, scale: &[u32]) -> String {
+    use std::collections::HashSet;
+    let cubins: HashSet<u32> = scan
+        .binaries
+        .iter()
+        .flat_map(|b| b.cubins.iter())
+        .map(sm_value)
+        .collect();
+    let ptx: HashSet<u32> = scan
+        .binaries
+        .iter()
+        .flat_map(|b| b.ptx.iter())
+        .map(sm_value)
+        .collect();
+
+    let mut h = String::from("<span class=\"cc-bar\">");
+    for sm in scale {
+        if cubins.contains(sm) {
+            h.push_str(&format!(
+                "<span class=\"c sass {}\" title=\"sm_{sm} compiled\"></span>",
+                sm_gen_class(*sm)
+            ));
+        } else if ptx.contains(sm) {
+            h.push_str(&format!(
+                "<span class=\"c ptx\" title=\"sm_{sm} PTX only\"></span>"
+            ));
+        } else {
+            h.push_str(&format!(
+                "<span class=\"c empty\" title=\"sm_{sm} absent\"></span>"
+            ));
+        }
+    }
+    h.push_str("</span>");
+    h
 }
 
 /// Build a human-readable subtitle explaining the family's filter/sort config.
 fn family_subtitle(family: &FamilyConfig) -> String {
     let count = match family.last_n {
-        Some(n) => format!("last {n}"),
-        None => "all".to_string(),
+        Some(n) => format!("{n} most recent"),
+        None => "All".to_string(),
     };
     let order = match family.order_by {
-        TagOrder::Lexicographic => "lexicographic",
-        TagOrder::ScanTime => "scan time",
-        TagOrder::Numeric => "numeric",
-        TagOrder::Semver => "semver",
-        TagOrder::SemverBuild => "semver+build",
+        TagOrder::Lexicographic => "by tag name",
+        TagOrder::ScanTime => "by scan time",
+        TagOrder::Numeric => "by version number",
+        TagOrder::Semver => "by version",
+        TagOrder::SemverBuild => "by version and build",
     };
-    format!(
-        "{count} images matching {}, sorted by {order}",
-        family.tag_pattern,
-    )
+    format!("{count} tags, ordered {order}")
 }
 
 /// Build the nav link HTML for site-generated pages.
@@ -319,13 +392,34 @@ pub fn generate_site(config: &SiteConfig, store: &ScanStore) -> Result<()> {
     let mut index_families: Vec<IndexFamily> = Vec::new();
     let mut og_data: Vec<og::FamilyOgData> = Vec::new();
 
+    // Resolve every family before rendering any of them: the capability strip
+    // draws on one scale shared across the whole catalog, which is not known
+    // until all scans are in hand.
+    let mut resolved = Vec::new();
     for (family_idx, family) in config.families.iter().enumerate() {
         let scans = resolve_family_scans(family, store)?;
         if scans.is_empty() {
             tracing::warn!(family = %family.name, "no matching scans found, skipping");
             continue;
         }
+        resolved.push((family_idx, family, scans));
+    }
 
+    let sm_scale;
+    let show_ptx;
+    {
+        let all: Vec<&ScanResult> = resolved.iter().flat_map(|(_, _, s)| s.iter()).collect();
+        sm_scale = catalog_sm_scale(&all);
+        // A column that says the same thing on every row is not telling the
+        // reader anything.
+        let mut vals = all.iter().map(|s| s.has_ptx_forward_compat);
+        show_ptx = match vals.next() {
+            Some(first) => vals.any(|v| v != first),
+            None => false,
+        };
+    }
+
+    for (family_idx, family, scans) in resolved {
         // Generate individual scan pages with OG meta tags
         for scan in &scans {
             let meta = og::scan_og_meta(scan);
@@ -386,9 +480,18 @@ pub fn generate_site(config: &SiteConfig, store: &ScanStore) -> Result<()> {
         let scan_rows: Vec<IndexScanRow> = scans
             .iter()
             .map(|scan| {
-                let cc_range = match (&scan.effective_cc_min, &scan.effective_cc_max) {
-                    (Some(min), Some(max)) => format!("{min} - {max}"),
-                    _ => "-".to_string(),
+                // cc_min > cc_max happens when a binary carries a stale or stub
+                // cubin. Print the endpoints in order so the range is readable,
+                // and flag it rather than passing it off as a normal range.
+                let (cc_range, cc_note) = match (&scan.effective_cc_min, &scan.effective_cc_max) {
+                    (Some(min), Some(max)) if sm_value(min) > sm_value(max) => (
+                        format!("{max} - {min}"),
+                        format!(
+                            "reported as {min} - {max}; a binary carries a stale or stub cubin"
+                        ),
+                    ),
+                    (Some(min), Some(max)) => (format!("{min} - {max}"), String::new()),
+                    _ => ("-".to_string(), String::new()),
                 };
                 IndexScanRow {
                     image: scan.image.clone(),
@@ -401,6 +504,8 @@ pub fn generate_site(config: &SiteConfig, store: &ScanStore) -> Result<()> {
                         .unwrap_or("-")
                         .to_string(),
                     cc_range,
+                    cc_note,
+                    cc_bar: cc_bar_html(scan, &sm_scale),
                     ptx_class: if scan.has_ptx_forward_compat {
                         "ptx-yes"
                     } else {
@@ -420,6 +525,7 @@ pub fn generate_site(config: &SiteConfig, store: &ScanStore) -> Result<()> {
             idx: family_idx,
             name: family.name.clone(),
             subtitle: family_subtitle(family),
+            pattern: family.tag_pattern.clone(),
             scans: scan_rows,
         });
 
@@ -445,6 +551,7 @@ pub fn generate_site(config: &SiteConfig, store: &ScanStore) -> Result<()> {
             base_css => templates::BASE_CSS,
             site_title => config.title,
             families => index_families,
+            show_ptx => show_ptx,
             site_data => site_json,
             og_title => index_meta.title,
             og_description => index_meta.description,
@@ -492,8 +599,9 @@ mod tests {
     use crate::nvidia::ComputeCapability;
     use crate::scan::{BinaryScanResult, EnvironmentInfo, ImageMetadata, ScanResult};
     use crate::site::{
-        all_pairs, numeric_sort_key, resolve_family_scans, short_image_name, slug_for_image,
-        FamilyConfig, SiteConfig,
+        all_pairs, catalog_sm_scale, cc_bar_html, family_subtitle, numeric_sort_key,
+        resolve_family_scans, short_image_name, slug_for_image, sm_gen_class, sm_value,
+        FamilyConfig, SiteConfig, TagOrder,
     };
     use crate::store::ScanStore;
 
@@ -511,6 +619,95 @@ mod tests {
             order_by: crate::site::TagOrder::Lexicographic,
             build_separator: None,
         }
+    }
+
+    #[test]
+    fn sm_value_packs_major_minor() {
+        assert_eq!(sm_value(&cc(9, 0)), 90);
+        assert_eq!(sm_value(&cc(12, 1)), 121);
+        assert_eq!(sm_value(&cc(5, 2)), 52);
+    }
+
+    #[test]
+    fn sm_gen_class_covers_every_boundary() {
+        assert_eq!(sm_gen_class(35), "g-legacy");
+        assert_eq!(sm_gen_class(50), "g-maxwell");
+        assert_eq!(sm_gen_class(52), "g-maxwell");
+        assert_eq!(sm_gen_class(60), "g-pascal");
+        assert_eq!(sm_gen_class(70), "g-volta");
+        assert_eq!(sm_gen_class(75), "g-volta");
+        assert_eq!(sm_gen_class(80), "g-ampere");
+        assert_eq!(sm_gen_class(89), "g-ampere");
+        assert_eq!(sm_gen_class(90), "g-hopper");
+        assert_eq!(sm_gen_class(100), "g-blackwell");
+        assert_eq!(sm_gen_class(121), "g-blackwell");
+    }
+
+    #[test]
+    fn catalog_scale_is_sorted_deduped_and_spans_every_scan() {
+        let a = test_scan("img:a");
+        let b = test_scan("img:b");
+        // test_scan carries cubins 7.0 and 9.0 plus ptx 9.0
+        assert_eq!(catalog_sm_scale(&[&a, &b]), vec![70, 90]);
+    }
+
+    #[test]
+    fn cc_bar_marks_compiled_ptx_and_absent_against_the_shared_scale() {
+        let scan = test_scan("img:a");
+        // 80 appears in neither cubins nor ptx for this scan.
+        let html = cc_bar_html(&scan, &[70, 80, 90]);
+        let cells: Vec<&str> = html.split("<span class=\"c ").skip(1).collect();
+        assert_eq!(cells.len(), 3, "one cell per scale entry");
+        assert!(
+            cells[0].starts_with("sass g-volta"),
+            "70 is compiled: {}",
+            cells[0]
+        );
+        assert!(cells[1].starts_with("empty"), "80 is absent: {}", cells[1]);
+        assert!(
+            cells[2].starts_with("sass g-hopper"),
+            "90 is compiled: {}",
+            cells[2]
+        );
+    }
+
+    #[test]
+    fn cc_bar_prefers_compiled_over_ptx_for_the_same_level() {
+        // test_scan has both a cubin and PTX at 9.0; compiled code wins the cell.
+        let scan = test_scan("img:a");
+        let html = cc_bar_html(&scan, &[90]);
+        assert!(html.contains("sass g-hopper"));
+        assert!(!html.contains("c ptx"));
+    }
+
+    #[test]
+    fn cc_bar_on_an_empty_scale_is_an_empty_strip() {
+        let scan = test_scan("img:a");
+        assert_eq!(cc_bar_html(&scan, &[]), "<span class=\"cc-bar\"></span>");
+    }
+
+    #[test]
+    fn family_subtitle_does_not_leak_the_tag_regex() {
+        let family = FamilyConfig {
+            name: "Test".to_string(),
+            registry: "ghcr.io".to_string(),
+            repository: "acme/thing".to_string(),
+            tag_pattern: r"^v\d+\.\d+\.\d+$".to_string(),
+            last_n: Some(3),
+            order_by: TagOrder::Semver,
+            build_separator: None,
+        };
+        let subtitle = family_subtitle(&family);
+        assert!(
+            !subtitle.contains("\\d"),
+            "regex must not reach the page: {subtitle}"
+        );
+        assert!(
+            !subtitle.contains('^'),
+            "regex must not reach the page: {subtitle}"
+        );
+        assert!(subtitle.contains("3 most recent"), "{subtitle}");
+        assert!(subtitle.contains("by version"), "{subtitle}");
     }
 
     fn test_scan(image: &str) -> ScanResult {
