@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::Read;
 use std::sync::Arc;
 
@@ -157,6 +157,9 @@ pub enum DiscoveredMetadata {
         package_name: String,
         content: String,
     },
+    /// A shared library that failed path classification, to be re-examined once
+    /// every layer's ld.so.conf entries are known.
+    DeferredLib { path: String, layer_index: usize },
     /// Raw bytes of /var/lib/rpm/rpmdb.sqlite (RPM package database).
     RpmDatabase(Vec<u8>),
 }
@@ -365,7 +368,7 @@ pub async fn stream_binaries_to(
     let blob_cache = blob_cache.map(Arc::new);
     let layer_cache = layer_cache.map(Arc::new);
 
-    let results: Vec<Result<()>> = futures::stream::iter(layers.into_iter())
+    let results: Vec<Result<()>> = futures::stream::iter(layers)
         .map(|(layer_idx, layer)| {
             let client = Arc::clone(&client);
             let image_ref = image_ref.clone();
@@ -483,6 +486,172 @@ pub async fn stream_binaries_to(
 /// cache entry. Without this drain, the gzip decoder stops pulling bytes once
 /// it hits the gzip footer, the `CachingReader` never sees EOF, and the temp
 /// file gets deleted on drop instead of being promoted to the cache.
+/// Second extraction pass over an explicit path allowlist.
+///
+/// `classify_path` runs while streaming tar entries, so it cannot know about a
+/// directory registered by an `/etc/ld.so.conf.d/*.conf` file that lives in a
+/// later layer. Once every layer has been read the full path set is known, and
+/// the shared libraries deferred during the first pass can be resolved. Only
+/// layers holding a wanted path are revisited, and blobs are already in the
+/// cache by this point, so this costs a decompress rather than a download.
+///
+/// Does not write the layer manifest cache: the manifest recorded by
+/// `stream_binaries_to` is the authoritative record for a layer.
+#[allow(clippy::too_many_arguments)]
+pub async fn stream_selected_paths_to(
+    client: Arc<Client>,
+    image_ref: Reference,
+    auth: RegistryAuth,
+    layers: Vec<(usize, oci_client::manifest::OciDescriptor)>,
+    selected: HashMap<usize, HashSet<String>>,
+    tx: tokio::sync::mpsc::Sender<DiscoveredBinary>,
+    progress: ScanProgress,
+    blob_cache: Option<BlobCache>,
+) -> Result<()> {
+    use futures::StreamExt;
+
+    client
+        .auth(&image_ref, &auth, oci_client::RegistryOperation::Pull)
+        .await
+        .context("registry authentication failed")?;
+
+    let blob_cache = blob_cache.map(Arc::new);
+    let selected = Arc::new(selected);
+
+    let results: Vec<Result<()>> = futures::stream::iter(
+        layers
+            .into_iter()
+            .filter(|(idx, _)| selected.contains_key(idx)),
+    )
+    .map(|(layer_idx, layer)| {
+        let client = Arc::clone(&client);
+        let image_ref = image_ref.clone();
+        let tx = tx.clone();
+        let progress = progress.clone();
+        let blob_cache = blob_cache.clone();
+        let selected = Arc::clone(&selected);
+        async move {
+            let wanted = match selected.get(&layer_idx) {
+                Some(w) => w.clone(),
+                None => return Ok(()),
+            };
+
+            if let Some(ref cache) = blob_cache {
+                if let Some(cached_path) = cache.get(&layer.digest) {
+                    let progress = progress.clone();
+                    return tokio::task::spawn_blocking(move || {
+                        let file = std::fs::File::open(&cached_path).with_context(|| {
+                            format!("failed to open cached blob {}", cached_path.display())
+                        })?;
+                        extract_selected(file, &wanted, &tx, &progress, layer_idx)
+                    })
+                    .await
+                    .context("deferred layer extraction task panicked")?;
+                }
+            }
+
+            let stream = client
+                .pull_blob_stream(&image_ref, &layer)
+                .await
+                .with_context(|| format!("failed to pull layer {}", layer.digest))?;
+            let async_reader = tokio_util::io::StreamReader::new(stream.stream);
+            let sync_reader = SyncIoBridge::new(async_reader);
+            let progress = progress.clone();
+            tokio::task::spawn_blocking(move || {
+                extract_selected(sync_reader, &wanted, &tx, &progress, layer_idx)
+            })
+            .await
+            .context("deferred layer extraction task panicked")?
+        }
+    })
+    .buffer_unordered(DEFAULT_LAYER_CONCURRENCY)
+    .collect()
+    .await;
+
+    for result in results {
+        result?;
+    }
+    Ok(())
+}
+
+/// Extract only the tar entries named in `wanted`, emitting them as linker libraries.
+fn extract_selected<R: Read>(
+    reader: R,
+    wanted: &HashSet<String>,
+    tx: &tokio::sync::mpsc::Sender<DiscoveredBinary>,
+    progress: &ScanProgress,
+    layer_idx: usize,
+) -> Result<()> {
+    let gz = GzDecoder::new(reader);
+    let mut archive = tar::Archive::new(gz);
+    let entries = archive.entries().context("failed to read tar entries")?;
+
+    let mut remaining = wanted.len();
+    for entry_result in entries {
+        if remaining == 0 {
+            break;
+        }
+        let mut entry = match entry_result {
+            Ok(e) => e,
+            Err(e) => {
+                tracing::debug!(error = %e, "skipping unreadable tar entry");
+                continue;
+            }
+        };
+        if entry.header().entry_type() != tar::EntryType::Regular {
+            continue;
+        }
+        let raw_path = match entry.path() {
+            Ok(p) => p.to_string_lossy().to_string(),
+            Err(_) => continue,
+        };
+        let stripped = raw_path.strip_prefix("./").unwrap_or(&raw_path);
+        let path = if stripped.starts_with('/') {
+            stripped.to_string()
+        } else {
+            format!("/{stripped}")
+        };
+        if !wanted.contains(&path) {
+            continue;
+        }
+        remaining -= 1;
+
+        let size = entry.size();
+        if size > MAX_FILE_SIZE {
+            tracing::warn!(path = %path, size, "skipping file larger than 2 GiB");
+            continue;
+        }
+        let mut data = Vec::with_capacity(size as usize);
+        if let Err(e) = entry.read_to_end(&mut data) {
+            tracing::debug!(path = %path, error = %e, "failed to read tar entry");
+            continue;
+        }
+        if !is_elf(&data) {
+            continue;
+        }
+        let content_sha256 = hex::encode(Sha256::digest(&data));
+        tracing::debug!(path = %path, "resolved deferred library");
+        if tx
+            .blocking_send(DiscoveredBinary {
+                path,
+                data,
+                priority: BinaryPriority::LinkerLibrary,
+                content_sha256: Some(content_sha256),
+                layer_index: layer_idx,
+            })
+            .is_err()
+        {
+            return Ok(());
+        }
+        progress.inc_extracted();
+    }
+
+    let gz = archive.into_inner();
+    let mut raw = gz.into_inner();
+    let _ = std::io::copy(&mut raw, &mut std::io::sink());
+    Ok(())
+}
+
 fn extract_and_send<R: Read>(
     reader: R,
     config: &ImageConfig,
@@ -633,7 +802,20 @@ fn extract_and_send<R: Read>(
 
         let priority = match classify_path(&path, config) {
             Some(p) => p,
-            None => continue,
+            None => {
+                // A .conf file registering this directory may live in a layer we
+                // have not read yet, so the verdict is not final. Keep the path.
+                if is_shared_library(&path) {
+                    manifest
+                        .metadata
+                        .push(CachedMetadata::DeferredLib { path: path.clone() });
+                    let _ = meta_tx.send(DiscoveredMetadata::DeferredLib {
+                        path,
+                        layer_index: layer_idx,
+                    });
+                }
+                continue;
+            }
         };
 
         let mut data = Vec::with_capacity(size as usize);
@@ -868,6 +1050,72 @@ mod tests {
     }
 
     // -- Classification --
+
+    fn tar_gz(entries: &[(&str, &[u8])]) -> Vec<u8> {
+        let mut builder = tar::Builder::new(Vec::new());
+        for (path, data) in entries {
+            let mut header = tar::Header::new_gnu();
+            header.set_size(data.len() as u64);
+            header.set_mode(0o644);
+            header.set_cksum();
+            builder.append_data(&mut header, path, *data).unwrap();
+        }
+        let tar = builder.into_inner().unwrap();
+        let mut enc = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+        std::io::Write::write_all(&mut enc, &tar).unwrap();
+        enc.finish().unwrap()
+    }
+
+    const ELF: &[u8] = &[0x7f, b'E', b'L', b'F', 2, 1, 1, 0, 0, 0, 0, 0];
+
+    fn run_extract_selected(archive: &[u8], wanted: &[&str]) -> Vec<String> {
+        let wanted: std::collections::HashSet<String> =
+            wanted.iter().map(|s| (*s).to_string()).collect();
+        let (tx, mut rx) = tokio::sync::mpsc::channel(16);
+        let progress = crate::progress::ScanProgress::new(0, 1, false, String::new());
+        crate::image::extract_selected(archive, &wanted, &tx, &progress, 3).unwrap();
+        drop(tx);
+        let mut out = Vec::new();
+        while let Ok(b) = rx.try_recv() {
+            assert_eq!(b.layer_index, 3, "layer index is carried through");
+            out.push(b.path);
+        }
+        out.sort();
+        out
+    }
+
+    #[test]
+    fn extract_selected_emits_only_wanted_paths() {
+        let archive = tar_gz(&[
+            ("./opt/v/lib/libfoo.so.0.0.0", ELF),
+            ("./opt/v/lib/libbar.so.0.0.0", ELF),
+            ("./usr/bin/unrelated", ELF),
+        ]);
+        let got = run_extract_selected(&archive, &["/opt/v/lib/libfoo.so.0.0.0"]);
+        assert_eq!(got, vec!["/opt/v/lib/libfoo.so.0.0.0".to_string()]);
+    }
+
+    #[test]
+    fn extract_selected_normalizes_leading_dot_slash() {
+        // OCI layer tars write "./opt/..."; the wanted set holds absolute paths.
+        let archive = tar_gz(&[("./opt/v/lib/libfoo.so.0.0.0", ELF)]);
+        let got = run_extract_selected(&archive, &["/opt/v/lib/libfoo.so.0.0.0"]);
+        assert_eq!(got.len(), 1, "leading ./ must not defeat the match");
+    }
+
+    #[test]
+    fn extract_selected_skips_non_elf() {
+        let archive = tar_gz(&[("./opt/v/lib/libfoo.so.0.0.0", b"#!/bin/sh\necho hi\n")]);
+        let got = run_extract_selected(&archive, &["/opt/v/lib/libfoo.so.0.0.0"]);
+        assert!(got.is_empty(), "a non-ELF file must not be emitted");
+    }
+
+    #[test]
+    fn extract_selected_handles_absent_paths() {
+        let archive = tar_gz(&[("./opt/v/lib/libfoo.so.0.0.0", ELF)]);
+        let got = run_extract_selected(&archive, &["/opt/v/lib/libmissing.so.0"]);
+        assert!(got.is_empty());
+    }
 
     #[test]
     fn classify_entrypoint() {
