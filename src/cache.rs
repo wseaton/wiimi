@@ -304,7 +304,7 @@ pub struct LayerCache {
 }
 
 /// Current manifest format version. Bump when the schema changes.
-const LAYER_MANIFEST_VERSION: u32 = 1;
+const LAYER_MANIFEST_VERSION: u32 = 2;
 
 /// Contents of a layer: every classified binary and metadata item found during extraction.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -355,6 +355,11 @@ pub enum CachedMetadata {
     DpkgFileList {
         package_name: String,
         content: String,
+    },
+    /// A shared library that failed path classification. Re-examined once the
+    /// full ld.so.conf path set is known.
+    DeferredLib {
+        path: String,
     },
 }
 
@@ -451,6 +456,7 @@ impl LayerCache {
 
 #[cfg(test)]
 mod tests {
+    use crate::cache::LAYER_MANIFEST_VERSION;
     use std::io::Read;
 
     use crate::cache::{BlobCache, CachedElfResult, CachingReader, ParseCache};
@@ -632,7 +638,7 @@ mod tests {
         };
 
         let manifest = LayerManifest {
-            version: 1,
+            version: LAYER_MANIFEST_VERSION,
             binaries: vec![ManifestBinary {
                 path: "/usr/lib64/libcuda.so.1".to_string(),
                 content_sha256: "abcdef1234567890".to_string(),
@@ -667,7 +673,7 @@ mod tests {
         };
 
         let manifest = LayerManifest {
-            version: 1,
+            version: LAYER_MANIFEST_VERSION,
             binaries: Vec::new(),
             metadata: Vec::new(),
             has_rpm_database: true,

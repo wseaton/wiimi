@@ -81,6 +81,10 @@ fn try_resolve_from_manifest(
                 package_name: package_name.clone(),
                 content: content.clone(),
             },
+            CachedMetadata::DeferredLib { path } => image::DiscoveredMetadata::DeferredLib {
+                path: path.clone(),
+                layer_index: layer_idx,
+            },
         })
         .collect();
 
@@ -781,6 +785,34 @@ fn parse_ld_so_conf(content: &str) -> Vec<String> {
     paths
 }
 
+/// Pick which deferred shared libraries to re-extract.
+///
+/// `ld.so.conf` directories are searched non-recursively by the dynamic linker,
+/// so a library qualifies only when its immediate parent is one of them. Paths
+/// already present in the scan results are skipped.
+fn select_deferred(
+    deferred: &[(usize, String)],
+    ld_conf_dirs: &HashSet<String>,
+    already: &HashSet<&str>,
+) -> HashMap<usize, HashSet<String>> {
+    let mut selected: HashMap<usize, HashSet<String>> = HashMap::new();
+    for (layer_index, path) in deferred {
+        if already.contains(path.as_str()) {
+            continue;
+        }
+        let Some((dir, _)) = path.rsplit_once('/') else {
+            continue;
+        };
+        if ld_conf_dirs.contains(dir) {
+            selected
+                .entry(*layer_index)
+                .or_default()
+                .insert(path.clone());
+        }
+    }
+    selected
+}
+
 /// Build an EnvironmentInfo struct from collected metadata items.
 fn collect_environment(metadata: Vec<image::DiscoveredMetadata>) -> EnvironmentInfo {
     let mut os = None;
@@ -795,6 +827,8 @@ fn collect_environment(metadata: Vec<image::DiscoveredMetadata>) -> EnvironmentI
 
     for meta in metadata {
         match meta {
+            // Stripped by scan_image before this point; ignored if one slips through.
+            image::DiscoveredMetadata::DeferredLib { .. } => {}
             image::DiscoveredMetadata::Symlink { path, target } => {
                 symlinks.insert(path, target);
             }
@@ -1121,6 +1155,15 @@ pub async fn scan_image(
         );
     }
 
+    // Cloned for the deferred pass below; phase 2 consumes the originals.
+    let deferred_client = Arc::clone(&client);
+    let deferred_image_ref = image_ref.clone();
+    let deferred_auth = auth.clone();
+    let deferred_blob_cache = blob_cache.clone();
+    let deferred_parse_cache = parse_cache.clone();
+    let all_layers: Vec<(usize, oci_client::manifest::OciDescriptor)> =
+        manifest.layers.iter().cloned().enumerate().collect();
+
     // Phase 2: Run the extraction pipeline for remaining layers.
     let mut pipeline_results = Vec::new();
     if !layers_to_extract.is_empty() {
@@ -1174,6 +1217,72 @@ pub async fn scan_image(
             misses = cache_misses,
             "parse cache: {cache_hits} hits, {cache_misses} misses"
         );
+    }
+
+    // Phase 4: resolve libraries deferred during extraction.
+    //
+    // classify_path runs while streaming tar entries, so a directory registered
+    // by an /etc/ld.so.conf.d/*.conf file that lands in a later layer is
+    // invisible to it. Now that every layer has been read the path set is
+    // complete, so re-examine what was set aside. Must happen before the soname
+    // maps and dependency graph are built.
+    let mut deferred: Vec<(usize, String)> = Vec::new();
+    all_metadata.retain(|m| match m {
+        image::DiscoveredMetadata::DeferredLib { path, layer_index } => {
+            deferred.push((*layer_index, path.clone()));
+            false
+        }
+        _ => true,
+    });
+
+    let ld_conf_dirs: HashSet<String> = all_metadata
+        .iter()
+        .filter_map(|m| match m {
+            image::DiscoveredMetadata::LdSoConf(content) => Some(parse_ld_so_conf(content)),
+            _ => None,
+        })
+        .flatten()
+        .map(|d| d.trim_end_matches('/').to_string())
+        .collect();
+
+    if !deferred.is_empty() && !ld_conf_dirs.is_empty() {
+        let already: HashSet<&str> = scan_results.iter().map(|b| b.path.as_str()).collect();
+        let selected = select_deferred(&deferred, &ld_conf_dirs, &already);
+
+        if !selected.is_empty() {
+            let count: usize = selected.values().map(HashSet::len).sum();
+            tracing::info!(
+                libraries = count,
+                layers = selected.len(),
+                "resolving libraries registered via ld.so.conf"
+            );
+            let (tx, rx) =
+                tokio::sync::mpsc::channel::<image::DiscoveredBinary>(BINARY_CHANNEL_CAPACITY);
+            let producer = tokio::spawn(image::stream_selected_paths_to(
+                deferred_client,
+                deferred_image_ref,
+                deferred_auth,
+                all_layers,
+                selected,
+                tx,
+                progress.clone(),
+                deferred_blob_cache,
+            ));
+            let consumer = tokio::spawn(scan_from_channel(
+                rx,
+                progress.clone(),
+                deferred_parse_cache,
+            ));
+            producer
+                .await
+                .context("deferred producer task panicked")?
+                .context("deferred layer extraction failed")?;
+            let extra = consumer
+                .await
+                .context("deferred consumer task panicked")?
+                .context("deferred binary scanning failed")?;
+            scan_results.extend(extra);
+        }
     }
 
     let environment = collect_environment(all_metadata);
@@ -1298,7 +1407,7 @@ async fn scan_from_channel(
         }
     }
 
-    results.sort_by(|a, b| a.priority.cmp(&b.priority));
+    results.sort_by_key(|a| a.priority);
 
     Ok(results)
 }
@@ -1848,13 +1957,16 @@ fn write_detail_file(result: &ScanResult) -> Result<String> {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
+    use std::collections::{HashMap, HashSet};
 
     use crate::nvidia::ComputeCapability;
 
     use crate::image::{BinaryPriority, ImageConfig};
     use crate::scan::{
         build_dep_graph, build_soname_maps, collect_environment, collect_reachable_paths,
+        select_deferred,
+    };
+    use crate::scan::{
         compute_effective_range, extract_metadata, format_report, parse_dpkg_status,
         parse_ld_so_conf, parse_os_release, parse_rpm_database_at, parse_rpm_header_blob,
         python_env_label, read_string_array, read_u32_array, render_dep_tree, BinaryScanResult,
@@ -1862,6 +1974,76 @@ mod tests {
         RPMTAG_DIRNAMES, RPMTAG_NAME, RPMTAG_RELEASE, RPMTAG_VENDOR, RPMTAG_VERSION,
         RPM_HEADER_MAGIC, RPM_TYPE_INT32, RPM_TYPE_STRING_ARRAY,
     };
+
+    fn dirs(items: &[&str]) -> HashSet<String> {
+        items.iter().map(|s| (*s).to_string()).collect()
+    }
+
+    #[test]
+    fn select_deferred_picks_libs_in_an_ld_conf_dir() {
+        let deferred = vec![(7, "/opt/vendor/net/lib/libfoo.so.0.0.0".to_string())];
+        let selected = select_deferred(&deferred, &dirs(&["/opt/vendor/net/lib"]), &HashSet::new());
+        assert_eq!(
+            selected.len(),
+            1,
+            "the layer holding the library is selected"
+        );
+        assert!(selected[&7].contains("/opt/vendor/net/lib/libfoo.so.0.0.0"));
+    }
+
+    #[test]
+    fn select_deferred_ignores_subdirectories() {
+        // ld.so.conf directories are not searched recursively, so a dlopened
+        // module one level down must not be swept in.
+        let deferred = vec![(7, "/opt/vendor/net/lib/plugins/libbar.so.0.0.0".to_string())];
+        let selected = select_deferred(&deferred, &dirs(&["/opt/vendor/net/lib"]), &HashSet::new());
+        assert!(selected.is_empty(), "nested module must not be selected");
+    }
+
+    #[test]
+    fn select_deferred_skips_already_scanned_paths() {
+        let deferred = vec![(1, "/opt/vendor/net/lib/libfoo.so.0.0.0".to_string())];
+        let already: HashSet<&str> = ["/opt/vendor/net/lib/libfoo.so.0.0.0"]
+            .into_iter()
+            .collect();
+        let selected = select_deferred(&deferred, &dirs(&["/opt/vendor/net/lib"]), &already);
+        assert!(
+            selected.is_empty(),
+            "a path already scanned is not re-extracted"
+        );
+    }
+
+    #[test]
+    fn select_deferred_ignores_dirs_with_no_ld_conf_entry() {
+        let deferred = vec![(1, "/some/random/build/dir/libfoo.so".to_string())];
+        let selected = select_deferred(&deferred, &dirs(&["/opt/vendor/net/lib"]), &HashSet::new());
+        assert!(selected.is_empty());
+    }
+
+    #[test]
+    fn select_deferred_groups_paths_by_layer() {
+        let deferred = vec![
+            (2, "/opt/v/lib/a.so.1".to_string()),
+            (2, "/opt/v/lib/b.so.1".to_string()),
+            (5, "/opt/v/lib/c.so.1".to_string()),
+        ];
+        let selected = select_deferred(&deferred, &dirs(&["/opt/v/lib"]), &HashSet::new());
+        assert_eq!(selected[&2].len(), 2);
+        assert_eq!(selected[&5].len(), 1);
+    }
+
+    #[test]
+    fn select_deferred_tolerates_trailing_slash_in_ld_conf() {
+        // parse_ld_so_conf preserves whatever the .conf file wrote; scan_image
+        // normalises, so confirm the normalised form is what matching needs.
+        let deferred = vec![(0, "/opt/v/lib/libfoo.so.0".to_string())];
+        let raw: HashSet<String> = ["/opt/v/lib/"]
+            .iter()
+            .map(|d| d.trim_end_matches('/').to_string())
+            .collect();
+        let selected = select_deferred(&deferred, &raw, &HashSet::new());
+        assert_eq!(selected[&0].len(), 1);
+    }
 
     fn empty_env() -> EnvironmentInfo {
         EnvironmentInfo {
