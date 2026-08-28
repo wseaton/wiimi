@@ -94,6 +94,38 @@ a { color: var(--accent); }
   border-bottom-color: var(--accent);
 }
 
+.cc-bar {
+  display: inline-flex;
+  gap: 1px;
+  vertical-align: middle;
+  height: 10px;
+  margin-left: 4px;
+}
+.cc-bar .c {
+  width: 6px;
+  height: 10px;
+  border-radius: 1px;
+}
+/* One cell per SM level. Compiled SASS takes its generation's colour from the
+   ramp, so a row reads as a spectrum of which silicon the binary was built for.
+   PTX is not compiled code, so it is outlined rather than filled. */
+.cc-bar .c.g-legacy    { background: var(--sm-legacy); }
+.cc-bar .c.g-maxwell   { background: var(--sm-maxwell); }
+.cc-bar .c.g-pascal    { background: var(--sm-pascal); }
+.cc-bar .c.g-volta     { background: var(--sm-volta); }
+.cc-bar .c.g-ampere    { background: var(--sm-ampere); }
+.cc-bar .c.g-hopper    { background: var(--sm-hopper); }
+.cc-bar .c.g-blackwell { background: var(--sm-blackwell); }
+.cc-bar .c.ptx { background: transparent; box-shadow: inset 0 0 0 1px var(--sm-ptx); }
+.cc-bar .c.empty { background: #e3e9ef; }
+
+/* Flag a capability range whose endpoints arrived inverted. */
+.cc-flag {
+  color: var(--red);
+  font-weight: 700;
+  cursor: help;
+}
+
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {
     animation-duration: 0.01ms !important;
