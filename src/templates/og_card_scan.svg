@@ -1,10 +1,10 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630">
-  <rect width="1200" height="630" fill="#282828"/>
-  <rect x="0" y="0" width="1200" height="6" fill="#d79921"/>
-  <text x="60" y="100" font-family="Menlo, Liberation Mono, monospace" font-size="28" fill="#928374">wiimi</text>
-  <text x="60" y="200" font-family="Menlo, Liberation Mono, monospace" font-size="36" font-weight="bold" fill="#ebdbb2">{{ image|svg_escape }}</text>
-  <text x="60" y="310" font-family="Menlo, Liberation Mono, monospace" font-size="30" fill="#a89984">{{ details|svg_escape }}</text>
-  <text x="60" y="410" font-family="Menlo, Liberation Mono, monospace" font-size="28" fill="#83a598">{{ binaries|svg_escape }}</text>
-  <rect x="0" y="590" width="1200" height="40" fill="#1d2021"/>
-  <text x="60" y="618" font-family="Menlo, Liberation Mono, monospace" font-size="18" fill="#665c54">WTF Is In My Image</text>
+  <rect width="1200" height="630" fill="#060d14"/>
+  <rect x="0" y="0" width="1200" height="6" fill="#96650f"/>
+  <text x="60" y="100" font-family="Menlo, Liberation Mono, monospace" font-size="28" fill="#8a98a6">wiimi</text>
+  <text x="60" y="200" font-family="Menlo, Liberation Mono, monospace" font-size="36" font-weight="bold" fill="#eceff3">{{ image|svg_escape }}</text>
+  <text x="60" y="310" font-family="Menlo, Liberation Mono, monospace" font-size="30" fill="#aebac6">{{ details|svg_escape }}</text>
+  <text x="60" y="410" font-family="Menlo, Liberation Mono, monospace" font-size="28" fill="#5b8fb8">{{ binaries|svg_escape }}</text>
+  <rect x="0" y="590" width="1200" height="40" fill="#16212b"/>
+  <text x="60" y="618" font-family="Menlo, Liberation Mono, monospace" font-size="18" fill="#8a98a6">WTF Is In My Image</text>
 </svg>

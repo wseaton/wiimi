@@ -1,48 +1,102 @@
 :root {
-  --bg: #fbf1c7;
-  --bg-surface: #ebdbb2;
-  --bg-hover: #d5c4a1;
-  --text: #3c3836;
-  --text-dim: #7c6f64;
-  --text-bright: #282828;
-  --green: #79740e;
-  --blue: #076678;
-  --red: #9d0006;
-  --yellow: #b57614;
-  --border: #bdae93;
-  --accent: #8f3f71;
+  /* Cool neutral ground. Deliberately not warm: the data is dense and
+     monochrome-adjacent, and a cool ground keeps the architecture ramp
+     below the only saturated thing on the page. */
+  --bg: #f6f8fa;
+  --bg-raised: #ffffff;
+  --bg-surface: #eceff3;
+  --bg-hover: #dde4eb;
+  --border: #c4cfd9;
+  --border-strong: #9fb0be;
+
+  --text: #16212b;
+  --text-dim: #5b6b7a;
+  --text-bright: #060d14;
+
+  --accent: #0a6c9e;
+  --accent-weak: #dceaf3;
+
+  --green: #12795a;
+  --blue: #1e5fa8;
+  --red: #a82a38;
+  --yellow: #8a5d0c;
+
+  /* Compute capability is ordinal, so it gets a sequential ramp rather than
+     unrelated hues: older silicon sits dark and cool, newer runs bright.
+     Anything that is not an architecture drops out of the ramp entirely. */
+  --sm-legacy: #8a98a6;
+  --sm-maxwell: #3b3f8f;
+  --sm-pascal: #34549c;
+  --sm-volta: #256e9f;
+  --sm-ampere: #17879b;
+  --sm-hopper: #0f9c8a;
+  --sm-blackwell: #24b172;
+  --sm-ptx: #6b7c8c;
+  --sm-host: #2b3742;
+
+  --step: 4px;
+  --radius: 3px;
 }
+
 * { box-sizing: border-box; margin: 0; padding: 0; }
+
 body {
-  font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', monospace;
-  font-size: 13px;
+  font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', ui-monospace, monospace;
+  font-size: 12.5px;
+  font-variant-ligatures: none;
   background: var(--bg);
   color: var(--text);
-  line-height: 1.5;
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Micro-label. Sections announce themselves once, quietly, then get out of
+   the way of the data. */
+.eyebrow {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+
+a { color: var(--accent); }
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
 }
 
 /* -- masthead -- */
 .masthead {
   display: flex;
   align-items: stretch;
-  height: 32px;
+  height: 34px;
   border-bottom: 1px solid var(--border);
-  background: var(--bg-surface);
+  background: var(--bg-raised);
   flex-shrink: 0;
 }
 .masthead-tab {
   padding: 0 16px;
   display: flex;
   align-items: center;
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 600;
+  letter-spacing: 0.04em;
   color: var(--text-dim);
   cursor: pointer;
   border-bottom: 2px solid transparent;
   user-select: none;
 }
-.masthead-tab:hover { color: var(--text); }
+.masthead-tab:hover { color: var(--text); background: var(--bg-surface); }
 .masthead-tab.active {
   color: var(--accent);
   border-bottom-color: var(--accent);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
 }

@@ -64,11 +64,19 @@
   flex-shrink: 0;
 }
 .sidebar-header h1 {
-  font-size: 15px;
-  font-weight: 600;
+  font-size: 14px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
   color: var(--text-bright);
-  margin-bottom: 2px;
+  margin-bottom: 3px;
   word-break: break-all;
+  /* A digest-pinned ref runs to three lines and pushes the scan stats off the
+     top of the panel. Two lines, tail on hover. */
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
 }
 .sidebar-header .subtitle {
   color: var(--text-dim);
@@ -197,9 +205,18 @@
   height: 10px;
   border-radius: 1px;
 }
-.cc-bar .c.sass { background: var(--green); }
-.cc-bar .c.ptx { background: var(--blue); }
-.cc-bar .c.empty { background: var(--bg); border: 1px solid var(--border); width: 4px; height: 8px; margin-top: 1px; }
+/* One cell per SM level. Compiled SASS takes its generation's colour from the
+   ramp, so a row reads as a spectrum of which silicon the binary was built for.
+   PTX is not compiled code, so it is outlined rather than filled. */
+.cc-bar .c.g-legacy    { background: var(--sm-legacy); }
+.cc-bar .c.g-maxwell   { background: var(--sm-maxwell); }
+.cc-bar .c.g-pascal    { background: var(--sm-pascal); }
+.cc-bar .c.g-volta     { background: var(--sm-volta); }
+.cc-bar .c.g-ampere    { background: var(--sm-ampere); }
+.cc-bar .c.g-hopper    { background: var(--sm-hopper); }
+.cc-bar .c.g-blackwell { background: var(--sm-blackwell); }
+.cc-bar .c.ptx { background: transparent; box-shadow: inset 0 0 0 1px var(--sm-ptx); }
+.cc-bar .c.empty { background: #e3e9ef; }
 
 /* sm chiclets */
 .sm-chiclets { display: flex; flex-wrap: wrap; gap: 3px; margin-top: 2px; }
@@ -212,8 +229,8 @@
   font-family: inherit;
   line-height: 1.3;
 }
-.sm-chip.sass { background: var(--green); color: #fbf1c7; }
-.sm-chip.ptx { background: var(--blue); color: #fbf1c7; }
+.sm-chip.sass { background: var(--sm-ampere); color: #f6f8fa; }
+.sm-chip.ptx { background: var(--blue); color: #f6f8fa; }
 
 /* detail panel */
 .detail-panel {
@@ -241,11 +258,11 @@
   font-size: 9px;
   font-weight: 600;
 }
-.priority-badge.Entrypoint { background: #89b4fa33; color: var(--blue); }
-.priority-badge.PythonExtension { background: #a6e3a133; color: var(--green); }
-.priority-badge.LinkerLibrary { background: #f9e2af33; color: var(--yellow); }
-.priority-badge.PathBinary { background: #cba6f733; color: var(--accent); }
-.priority-badge.LooseGpuFile { background: #f38ba833; color: var(--red); }
+.priority-badge.Entrypoint { background: #5b8fb833; color: var(--blue); }
+.priority-badge.PythonExtension { background: #24b17233; color: var(--green); }
+.priority-badge.LinkerLibrary { background: #96650f33; color: var(--yellow); }
+.priority-badge.PathBinary { background: #7a6bc433; color: var(--accent); }
+.priority-badge.LooseGpuFile { background: #c9445033; color: var(--red); }
 
 /* -- graph area -- */
 .graph-area {
@@ -256,6 +273,7 @@
 #cy {
   width: 100%;
   height: 100%;
+  background: var(--bg-surface);
 }
 .graph-controls {
   position: absolute;
@@ -305,7 +323,7 @@
 .cy-node-name {
   font-size: 8px;
   font-weight: 600;
-  color: #282828;
+  color: #060d14;
   line-height: 1.3;
   margin-bottom: 2px;
   overflow: hidden;
@@ -324,13 +342,13 @@
   border-radius: 2px;
   font-size: 7px;
   font-weight: 700;
-  color: #fbf1c7;
+  color: #f6f8fa;
   line-height: 1.4;
   white-space: nowrap;
 }
 .cy-chip-ptx {
-  background: #076678 !important;
-  border: 1px dashed #458588;
+  background: #0a6c9e !important;
+  border: 1px dashed #256e9f;
 }
 
 /* insights full page */
@@ -400,10 +418,10 @@
   padding: 1px 5px;
   border-radius: 3px;
 }
-.badge-warn { background: #f9e2af; color: var(--yellow); }
-.badge-error { background: #f38ba833; color: var(--red); }
-.badge-info { background: #89b4fa33; color: var(--blue); }
-.badge-ok { background: #a6e3a133; color: var(--green); }
+.badge-warn { background: #96650f; color: var(--yellow); }
+.badge-error { background: #c9445033; color: var(--red); }
+.badge-info { background: #5b8fb833; color: var(--blue); }
+.badge-ok { background: #24b17233; color: var(--green); }
 .insight-table {
   width: 100%;
   font-size: 10px;
@@ -481,11 +499,14 @@
   cursor: pointer;
   font-size: 9px;
   font-weight: 600;
-  color: #fbf1c7;
+  color: #f6f8fa;
   user-select: none;
-  opacity: 0.4;
+  /* Inactive still has to be readable: 9px white text at 0.4 was not, and it
+     flattened the generation ramp the chips are meant to show. */
+  opacity: 0.75;
   transition: opacity 0.15s;
 }
+.sm-filter-chip:hover { opacity: 1; }
 .sm-filter-chip.active {
   opacity: 1;
   box-shadow: 0 0 0 2px var(--text-bright);
@@ -639,14 +660,14 @@
       <button class="graph-btn" id="toggle-all" title="Show/hide non-CUDA nodes (libraries without GPU code)">All nodes</button>
     </div>
     <div class="legend">
-      <div class="legend-item"><div class="legend-swatch" style="background:#b16286"></div> Maxwell</div>
-      <div class="legend-item"><div class="legend-swatch" style="background:#d65d0e"></div> Pascal</div>
-      <div class="legend-item"><div class="legend-swatch" style="background:#d79921"></div> Volta/Turing</div>
-      <div class="legend-item"><div class="legend-swatch" style="background:#98971a"></div> Ampere</div>
-      <div class="legend-item"><div class="legend-swatch" style="background:#689d6a"></div> Hopper</div>
-      <div class="legend-item"><div class="legend-swatch" style="background:#458588"></div> Blackwell+</div>
-      <div class="legend-item"><div class="legend-swatch" style="background:#076678;border:1px dashed #458588"></div> PTX</div>
-      <div class="legend-item"><div class="legend-swatch" style="background:#3c3836;border:2px dashed #cc241d"></div> Host</div>
+      <div class="legend-item"><div class="legend-swatch" style="background:var(--sm-maxwell)"></div> Maxwell</div>
+      <div class="legend-item"><div class="legend-swatch" style="background:var(--sm-pascal)"></div> Pascal</div>
+      <div class="legend-item"><div class="legend-swatch" style="background:var(--sm-volta)"></div> Volta/Turing</div>
+      <div class="legend-item"><div class="legend-swatch" style="background:var(--sm-ampere)"></div> Ampere</div>
+      <div class="legend-item"><div class="legend-swatch" style="background:var(--sm-hopper)"></div> Hopper</div>
+      <div class="legend-item"><div class="legend-swatch" style="background:var(--sm-blackwell)"></div> Blackwell+</div>
+      <div class="legend-item"><div class="legend-swatch" style="background:transparent;border:1px dashed var(--sm-ptx)"></div> PTX</div>
+      <div class="legend-item"><div class="legend-swatch" style="background:var(--sm-host);opacity:.35"></div> Host</div>
     </div>
     <div class="cy-tooltip" id="tooltip"></div>
   </div>
@@ -703,15 +724,25 @@ const DATA = {{ graph_data|safe }};
 
   function escHtml(s) { return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
 
+  function smGenClass(sm) {
+    if (sm < 50) return 'g-legacy';
+    if (sm < 60) return 'g-maxwell';
+    if (sm < 70) return 'g-pascal';
+    if (sm < 80) return 'g-volta';
+    if (sm < 90) return 'g-ampere';
+    if (sm < 100) return 'g-hopper';
+    return 'g-blackwell';
+  }
+
   function ccBarHTML(cubins, ptx) {
     if (smMin > smMax || smMin === 0 && smMax === 0) return '';
     const cs = new Set(cubins.map(smVal));
     const ps = new Set(ptx.map(smVal));
     let h = '<span class="cc-bar">';
     for (let sm = smMin; sm <= smMax; sm += 5) {
-      if (cs.has(sm)) h += '<span class="c sass" title="sm_'+sm+'"></span>';
-      else if (ps.has(sm)) h += '<span class="c ptx" title="sm_'+sm+'"></span>';
-      else h += '<span class="c empty"></span>';
+      if (cs.has(sm)) h += '<span class="c sass ' + smGenClass(sm) + '" title="sm_'+sm+' \u00b7 '+smGenName(sm)+'"></span>';
+      else if (ps.has(sm)) h += '<span class="c ptx" title="PTX sm_'+sm+'"></span>';
+      else h += '<span class="c empty" title="sm_'+sm+' not present"></span>';
     }
     return h + '</span>';
   }
@@ -720,23 +751,31 @@ const DATA = {{ graph_data|safe }};
     if (!cubins.length && !ptx.length) return '<span class="sm-chiclets"><span style="color:var(--text-dim);font-size:9px">no CUDA</span></span>';
     let h = '<span class="sm-chiclets">';
     for (const c of cubins.map(smVal).sort((a,b) => a-b)) {
-      h += '<span class="sm-chip" style="background:' + smGenColor(c) + ';color:#fbf1c7" title="' + smGenName(c) + '">sm_' + c + '</span>';
+      h += '<span class="sm-chip" style="background:' + smGenColor(c) + ';color:#f6f8fa" title="' + smGenName(c) + '">sm_' + c + '</span>';
     }
     for (const p of ptx.map(smVal).sort((a,b) => a-b)) {
-      h += '<span class="sm-chip" style="background:#076678;color:#fbf1c7;border:1px dashed #458588" title="PTX">PTX ' + p + '</span>';
+      h += '<span class="sm-chip" style="background:#0a6c9e;color:#f6f8fa;border:1px dashed #256e9f" title="PTX">PTX ' + p + '</span>';
     }
     return h + '</span>';
   }
 
+  const CSSVAR = (() => {
+    const style = getComputedStyle(document.documentElement);
+    const memo = {};
+    return (name) => (memo[name] ??= style.getPropertyValue(name).trim());
+  })();
+
   // Color per SM generation for chiclets
   function smGenColor(sm) {
-    if (sm < 50) return '#928374';       // ancient (gray)
-    if (sm < 60) return '#b16286';       // Maxwell (purple)
-    if (sm < 70) return '#d65d0e';       // Pascal (orange)
-    if (sm < 80) return '#d79921';       // Volta/Turing (yellow)
-    if (sm < 90) return '#98971a';       // Ampere (green)
-    if (sm < 100) return '#689d6a';      // Hopper (aqua)
-    return '#458588';                    // Blackwell+ (blue)
+    // Sequential ramp: dark and cool for old silicon, bright for new. Read the
+    // chiclet strip left to right and the gradient is the generation spread.
+    if (sm < 50) return CSSVAR('--sm-legacy');
+    if (sm < 60) return CSSVAR('--sm-maxwell');
+    if (sm < 70) return CSSVAR('--sm-pascal');
+    if (sm < 80) return CSSVAR('--sm-volta');
+    if (sm < 90) return CSSVAR('--sm-ampere');
+    if (sm < 100) return CSSVAR('--sm-hopper');
+    return CSSVAR('--sm-blackwell');
   }
 
   function smGenName(sm) {
@@ -1345,8 +1384,8 @@ const DATA = {{ graph_data|safe }};
 
   function showHostDetail(soname) {
     const panel = document.getElementById('detail');
-    let html = '<h3 style="color:#fb4934">' + escHtml(soname) + '</h3>';
-    html += '<dl><dt>Type</dt><dd style="color:#fb4934">Host / unresolved</dd>';
+    let html = '<h3 style="color:#c94450">' + escHtml(soname) + '</h3>';
+    html += '<dl><dt>Type</dt><dd style="color:#c94450">Host / unresolved</dd>';
     html += '<dt>Description</dt><dd>This shared library is not present in the container image. It must be provided by the host system at runtime (e.g. GPU driver, system library).</dd></dl>';
     // Find all nodes that depend on this
     const dependants = [];
@@ -1380,38 +1419,38 @@ const DATA = {{ graph_data|safe }};
         selector: 'node[type="individual"]',
         style: {
           'label': '',
-          'background-color': '#ebdbb2',
+          'background-color': '#ffffff',
           'shape': 'round-rectangle',
           'width': 'data(nodeWidth)',
           'height': 'data(nodeHeight)',
-          'border-width': 2,
-          'border-color': '#7c6f64',
+          'border-width': 1,
+          'border-color': '#16212b',
         },
       },
       {
         selector: 'node[type="bridge"]',
         style: {
           'label': '',
-          'background-color': '#f2e5bc',
+          'background-color': '#ffffff',
           'shape': 'round-rectangle',
           'width': 'data(nodeWidth)',
           'height': 'data(nodeHeight)',
           'border-width': 1,
-          'border-color': '#bdae93',
-          'border-style': 'dotted',
+          'border-color': '#9fb0be',
+          'border-style': 'solid',
         },
       },
       {
         selector: 'node[type="cluster"]',
         style: {
           'label': '',
-          'background-color': '#d5c4a1',
+          'background-color': '#dde4eb',
           'background-opacity': 0.9,
           'shape': 'round-rectangle',
           'width': 'data(nodeWidth)',
           'height': 'data(nodeHeight)',
           'border-width': 2,
-          'border-color': '#928374',
+          'border-color': '#8a98a6',
           'border-style': 'dashed',
         },
       },
@@ -1419,12 +1458,12 @@ const DATA = {{ graph_data|safe }};
         selector: 'node[type="plain"]',
         style: {
           'label': '',
-          'background-color': '#504945',
+          'background-color': '#2b3742',
           'shape': 'round-rectangle',
           'width': 'data(nodeWidth)',
           'height': 'data(nodeHeight)',
           'border-width': 1,
-          'border-color': '#665c54',
+          'border-color': '#8a98a6',
           'border-style': 'dotted',
           'opacity': 0.7,
         },
@@ -1433,12 +1472,12 @@ const DATA = {{ graph_data|safe }};
         selector: 'node[type="host"]',
         style: {
           'label': '',
-          'background-color': '#3c3836',
+          'background-color': '#16212b',
           'shape': 'round-rectangle',
           'width': 'data(nodeWidth)',
           'height': 'data(nodeHeight)',
           'border-width': 2,
-          'border-color': '#cc241d',
+          'border-color': '#a82a38',
           'border-style': 'dashed',
         },
       },
@@ -1446,8 +1485,8 @@ const DATA = {{ graph_data|safe }};
         selector: 'edge',
         style: {
           'width': 1.5,
-          'line-color': '#bdae93',
-          'target-arrow-color': '#7c6f64',
+          'line-color': '#9fb0be',
+          'target-arrow-color': '#5b6b7a',
           'target-arrow-shape': 'triangle',
           'curve-style': 'unbundled-bezier',
           'arrow-scale': 0.8,
@@ -1457,14 +1496,14 @@ const DATA = {{ graph_data|safe }};
       {
         selector: 'node:selected',
         style: {
-          'border-color': '#8f3f71',
+          'border-color': '#0a6c9e',
           'border-width': 3,
         },
       },
       {
         selector: '.highlighted',
         style: {
-          'border-color': '#8f3f71',
+          'border-color': '#0a6c9e',
           'border-width': 3,
           'opacity': 1,
         },
@@ -1472,8 +1511,8 @@ const DATA = {{ graph_data|safe }};
       {
         selector: '.highlighted-edge',
         style: {
-          'line-color': '#8f3f71',
-          'target-arrow-color': '#8f3f71',
+          'line-color': '#0a6c9e',
+          'target-arrow-color': '#0a6c9e',
           'width': 2.5,
           'opacity': 1,
         },
@@ -1511,7 +1550,7 @@ const DATA = {{ graph_data|safe }};
         html += '<div class="cy-node-name">' + escHtml(data.id) + '</div>';
         const chips = nodeChipsHTML(data.cubins, data.ptx);
         if (chips) html += '<div class="cy-node-chips">' + chips + '</div>';
-        if (data.package) html += '<div class="cy-node-pkg" style="font-size:6px;color:#928374;margin-top:1px;overflow:hidden;text-overflow:ellipsis;">' + escHtml(data.package) + '</div>';
+        if (data.package) html += '<div class="cy-node-pkg" style="font-size:6px;color:#8a98a6;margin-top:1px;overflow:hidden;text-overflow:ellipsis;">' + escHtml(data.package) + '</div>';
         html += '</div>';
         return html;
       },
@@ -1523,8 +1562,8 @@ const DATA = {{ graph_data|safe }};
       cssClass: '',
       tpl: function(data) {
         let html = '<div class="cy-node-label">';
-        html += '<div class="cy-node-name" style="color:#7c6f64">' + escHtml(data.id) + '</div>';
-        html += '<div style="font-size:6px;color:#928374;text-align:center">bridge</div>';
+        html += '<div class="cy-node-name" style="color:#5b6b7a">' + escHtml(data.id) + '</div>';
+        html += '<div style="font-size:6px;color:#8a98a6;text-align:center">bridge</div>';
         html += '</div>';
         return html;
       },
@@ -1536,7 +1575,7 @@ const DATA = {{ graph_data|safe }};
       cssClass: '',
       tpl: function(data) {
         let html = '<div class="cy-node-label">';
-        html += '<div class="cy-node-name" style="color:#a89984">' + escHtml(data.id) + '</div>';
+        html += '<div class="cy-node-name" style="color:#aebac6">' + escHtml(data.id) + '</div>';
         html += '</div>';
         return html;
       },
@@ -1548,8 +1587,8 @@ const DATA = {{ graph_data|safe }};
       cssClass: '',
       tpl: function(data) {
         let html = '<div class="cy-node-label">';
-        html += '<div class="cy-node-name" style="color:#fb4934">' + escHtml(data.soname) + '</div>';
-        html += '<div style="font-size:6px;color:#cc241d;text-align:center">host / unresolved</div>';
+        html += '<div class="cy-node-name" style="color:#c94450">' + escHtml(data.soname) + '</div>';
+        html += '<div style="font-size:6px;color:#a82a38;text-align:center">host / unresolved</div>';
         html += '</div>';
         return html;
       },
@@ -1689,8 +1728,8 @@ const DATA = {{ graph_data|safe }};
     hostVisible = !hostVisible;
     if (hostVisible) {
       cy.add(hostElements);
-      hostBtn.style.borderColor = '#cc241d';
-      hostBtn.style.color = '#fb4934';
+      hostBtn.style.borderColor = '#a82a38';
+      hostBtn.style.color = '#c94450';
     } else {
       cy.remove('node[type="host"]');
       hostBtn.style.borderColor = '';
@@ -1707,8 +1746,8 @@ const DATA = {{ graph_data|safe }};
     allNodesVisible = !allNodesVisible;
     if (allNodesVisible) {
       cy.add(allNodeElements);
-      allBtn.style.borderColor = '#458588';
-      allBtn.style.color = '#83a598';
+      allBtn.style.borderColor = '#256e9f';
+      allBtn.style.color = '#5b8fb8';
     } else {
       cy.remove('node[type="plain"]');
       allBtn.style.borderColor = '';
@@ -1980,7 +2019,7 @@ const DATA = {{ graph_data|safe }};
         const coverPct = (counts.sass / total * 100).toFixed(0);
         const barWidth = Math.max(coverPct * 1.2, 2);
         html += '<tr>';
-        html += '<td><span class="sm-chip" style="background:' + smGenColor(smInt) + ';color:#fbf1c7">sm_' + sm + '</span></td>';
+        html += '<td><span class="sm-chip" style="background:' + smGenColor(smInt) + ';color:#f6f8fa">sm_' + sm + '</span></td>';
         html += '<td>' + smGenName(smInt) + '</td>';
         html += '<td>' + counts.sass + '</td>';
         html += '<td>' + counts.ptx + '</td>';
