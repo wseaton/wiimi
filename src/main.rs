@@ -103,6 +103,10 @@ enum Command {
         /// Re-parse all binaries (skip parse cache) but keep blob cache
         #[arg(long)]
         reparse: bool,
+
+        /// TOML file of accepted findings; only new findings fail the scan
+        #[arg(long)]
+        baseline: Option<String>,
     },
 
     /// Discover new tags from registries and scan them
@@ -270,7 +274,12 @@ async fn main() -> Result<()> {
             insecure_registry,
             no_cache,
             reparse,
+            baseline,
         } => {
+            let baseline = match baseline {
+                Some(path) => crypto::Baseline::load(std::path::Path::new(&path))?,
+                None => crypto::Baseline::default(),
+            };
             let dockerconfig_bytes = load_docker_config(docker_config.as_deref())?;
             let result = resolve_scan_result(
                 &image,
@@ -282,42 +291,77 @@ async fn main() -> Result<()> {
             )
             .await?;
 
+            let hits: Vec<&scan::BinaryScanResult> = result
+                .binaries
+                .iter()
+                .filter(|b| !b.crypto.is_empty())
+                .collect();
+            let mut used_entries = vec![false; baseline.accept.len()];
+            let mut violations = 0usize;
+            let mut rows = Vec::new();
+            for b in &hits {
+                let accepted = baseline.accepts(&b.path, &b.crypto);
+                if let Some(idx) = accepted {
+                    used_entries[idx] = true;
+                } else if b.crypto.has_vendored_crypto() {
+                    violations += 1;
+                }
+                let owner = scan::attribute_owner(&result, &b.path);
+                rows.push((*b, owner, accepted));
+            }
+
             if json {
                 #[derive(serde::Serialize)]
                 struct CryptoFinding<'a> {
                     path: &'a str,
+                    #[serde(skip_serializing_if = "Option::is_none")]
+                    owner: Option<String>,
+                    accepted: bool,
+                    #[serde(skip_serializing_if = "Option::is_none")]
+                    accepted_reason: Option<&'a str>,
                     crypto: &'a crypto::CryptoInfo,
                 }
-                let findings: Vec<CryptoFinding> = result
-                    .binaries
+                let findings: Vec<CryptoFinding> = rows
                     .iter()
-                    .filter(|b| !b.crypto.is_empty())
-                    .map(|b| CryptoFinding {
+                    .map(|(b, owner, accepted)| CryptoFinding {
                         path: &b.path,
+                        owner: owner.clone(),
+                        accepted: accepted.is_some(),
+                        accepted_reason: accepted
+                            .and_then(|i| baseline.accept[i].reason.as_deref()),
                         crypto: &b.crypto,
                     })
                     .collect();
                 let output = serde_json::to_string_pretty(&findings)
                     .context("failed to serialize crypto findings")?;
                 println!("{output}");
+            } else if rows.is_empty() {
+                println!("No crypto findings.");
             } else {
-                let report = scan::format_crypto_findings(&result);
-                if report.is_empty() {
-                    println!("No crypto findings.");
-                } else {
-                    print!("{report}");
+                println!("Crypto findings:");
+                for (b, owner, accepted) in &rows {
+                    let reason = accepted.map(|i| {
+                        baseline.accept[i]
+                            .reason
+                            .as_deref()
+                            .unwrap_or("no reason given")
+                    });
+                    print!(
+                        "{}",
+                        scan::format_crypto_binary(b, owner.as_deref(), reason)
+                    );
                 }
             }
 
-            let violations = result
-                .binaries
-                .iter()
-                .filter(|b| b.crypto.has_vendored_crypto())
-                .count();
+            for (entry, used) in baseline.accept.iter().zip(&used_entries) {
+                if !used {
+                    tracing::warn!(path = %entry.path, "stale baseline entry matched nothing");
+                }
+            }
             if violations > 0 {
                 tracing::warn!(
                     binaries = violations,
-                    "vendored crypto found, exiting nonzero"
+                    "vendored crypto not covered by baseline, exiting nonzero"
                 );
                 std::process::exit(1);
             }

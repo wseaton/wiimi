@@ -1752,27 +1752,93 @@ pub fn format_crypto_findings(result: &ScanResult) -> String {
     }
     out.push_str("Crypto findings:\n");
     for b in &crypto_hits {
-        let linkage = match (b.crypto.links_libcrypto, b.crypto.links_libssl) {
-            (true, _) => "links libcrypto",
-            (false, true) => "links libssl only",
-            (false, false) => "no system TLS linkage",
-        };
-        out.push_str(&format!("  {} ({linkage})\n", b.path));
-        for v in &b.crypto.vendored {
-            let ver = v.version.as_deref().unwrap_or("unknown version");
-            out.push_str(&format!(
-                "    vendored: {} {ver} [{}]\n",
-                v.kind, v.evidence
-            ));
-        }
-        for c in &b.crypto.audit_crates {
-            out.push_str(&format!(
-                "    crate: {} {} ({:?})\n",
-                c.name, c.version, c.category
-            ));
-        }
+        out.push_str(&format_crypto_binary(
+            b,
+            attribute_owner(result, &b.path).as_deref(),
+            None,
+        ));
     }
     out.push('\n');
+    out
+}
+
+/// Render one binary's crypto findings, with its owning package and, when a
+/// baseline accepts it, the acceptance reason.
+pub fn format_crypto_binary(
+    b: &BinaryScanResult,
+    owner: Option<&str>,
+    accepted_reason: Option<&str>,
+) -> String {
+    let mut out = String::new();
+    let linkage = match (b.crypto.links_libcrypto, b.crypto.links_libssl) {
+        (true, _) => "links libcrypto",
+        (false, true) => "links libssl only",
+        (false, false) => "no system TLS linkage",
+    };
+    let owner_label = owner.map(|o| format!(" [{o}]")).unwrap_or_default();
+    out.push_str(&format!("  {} ({linkage}){owner_label}\n", b.path));
+    if let Some(reason) = accepted_reason {
+        out.push_str(&format!("    accepted by baseline: {reason}\n"));
+    }
+    for v in &b.crypto.vendored {
+        let ver = v.version.as_deref().unwrap_or("unknown version");
+        out.push_str(&format!(
+            "    vendored: {} {ver} [{}]\n",
+            v.kind, v.evidence
+        ));
+    }
+    for c in &b.crypto.audit_crates {
+        out.push_str(&format!(
+            "    crate: {} {} ({:?})\n",
+            c.name, c.version, c.category
+        ));
+    }
+    out
+}
+
+/// Best-effort owner of a binary path: the RPM/dpkg package that installed
+/// it, else the Python wheel whose site-packages subtree contains it.
+pub fn attribute_owner(result: &ScanResult, path: &str) -> Option<String> {
+    if let Some(owner) = result.environment.file_owners.get(path) {
+        return Some(format!("pkg: {owner}"));
+    }
+    for env in &result.environment.python_environments {
+        let dir = env.site_packages_dir.trim_end_matches('/');
+        let Some(rest) = path.strip_prefix(dir).and_then(|r| r.strip_prefix('/')) else {
+            continue;
+        };
+        let Some(top) = rest.split('/').next() else {
+            continue;
+        };
+        // Wheel bundled-library dirs use "<package>.libs"; package dirs use
+        // underscores where the wheel name has hyphens.
+        let candidate = normalize_py_name(top.trim_end_matches(".libs"));
+        if let Some(pkg) = env
+            .packages
+            .iter()
+            .find(|p| normalize_py_name(&p.name) == candidate)
+        {
+            return Some(format!("wheel: {} {}", pkg.name, pkg.version));
+        }
+    }
+    None
+}
+
+/// PEP 503 name normalization: lowercase, runs of -_. collapse to -.
+fn normalize_py_name(name: &str) -> String {
+    let mut out = String::with_capacity(name.len());
+    let mut prev_dash = false;
+    for c in name.chars() {
+        if c == '-' || c == '_' || c == '.' {
+            if !prev_dash {
+                out.push('-');
+                prev_dash = true;
+            }
+        } else {
+            out.extend(c.to_lowercase());
+            prev_dash = false;
+        }
+    }
     out
 }
 

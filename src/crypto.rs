@@ -30,6 +30,12 @@ pub enum VendoredCryptoKind {
     BoringSsl,
     /// Statically linked OpenSSL (openssl-src / vendored feature).
     OpenSslStatic,
+    /// Statically linked libsodium (libsodium-sys / sodiumoxide).
+    Libsodium,
+    /// Go stdlib crypto/tls compiled in (default pure-Go crypto).
+    GoStdlibCrypto,
+    /// Go BoringCrypto (goboring): statically linked BoringSSL module.
+    GoBoringCrypto,
     /// TLS cipher-suite name strings present without libssl linkage:
     /// an embedded TLS stack of unknown implementation.
     EmbeddedTls,
@@ -42,6 +48,9 @@ impl std::fmt::Display for VendoredCryptoKind {
             Self::AwsLc => "aws-lc",
             Self::BoringSsl => "boringssl",
             Self::OpenSslStatic => "openssl-static",
+            Self::Libsodium => "libsodium",
+            Self::GoStdlibCrypto => "go-stdlib-crypto",
+            Self::GoBoringCrypto => "go-boringcrypto",
             Self::EmbeddedTls => "embedded-tls",
         };
         f.write_str(s)
@@ -142,6 +151,7 @@ const CRYPTO_IMPL_SONAMES: &[&str] = &[
     "libssl3.so",
     "libnettle.so",
     "libgcrypt.so",
+    "libsodium.so",
 ];
 
 /// Whether a soname identifies a system crypto implementation library.
@@ -188,7 +198,19 @@ const CRYPTO_CRATES: &[(&str, CryptoCrateCategory)] = &[
     ("p384", CryptoCrateCategory::Primitive),
     ("p521", CryptoCrateCategory::Primitive),
     ("k256", CryptoCrateCategory::Primitive),
+    ("libsodium-sys", CryptoCrateCategory::Provider),
+    ("sodiumoxide", CryptoCrateCategory::Provider),
 ];
+
+/// Go modules that indicate crypto compiled into the binary, matched against
+/// `dep` lines from the embedded module info.
+const GO_CRYPTO_MODULES: &[(&str, CryptoCrateCategory)] =
+    &[("golang.org/x/crypto", CryptoCrateCategory::Primitive)];
+
+/// Go module providing the dlopen-based system OpenSSL backend used by
+/// Red Hat's FIPS-patched toolchain. Its presence means the binary defers to
+/// the host libcrypto at runtime, so stdlib crypto markers are not vendored.
+const GO_FIPS_OPENSSL_MODULE: &str = "github.com/golang-fips/openssl";
 
 /// One package entry in the cargo-auditable `.dep-v0` JSON.
 #[derive(Debug, Deserialize)]
@@ -283,18 +305,30 @@ const CIPHER_SUITE_STRINGS: &[&[u8]] = &[
     b"ECDHE-RSA-AES128-GCM-SHA256",
 ];
 
+/// Whether any DT_NEEDED soname starts with the given library prefix.
+pub fn links(needed: &[String], prefix: &str) -> bool {
+    needed.iter().any(|n| n.starts_with(prefix))
+}
+
+/// Result of scanning one ELF: signature hits plus crypto-relevant Go modules
+/// recovered from the embedded module info.
+pub struct SignatureScan {
+    pub vendored: Vec<VendoredCrypto>,
+    pub go_modules: Vec<CryptoCrate>,
+}
+
 /// Scan raw ELF bytes for vendored crypto signatures.
 ///
-/// `links_libcrypto` / `links_libssl` come from DT_NEEDED and gate the
-/// heuristics that only make sense for statically linked crypto.
-pub fn scan_signatures(
-    data: &[u8],
-    links_libcrypto: bool,
-    links_libssl: bool,
-) -> Vec<VendoredCrypto> {
+/// `needed` is the DT_NEEDED soname list; linkage against the system
+/// libcrypto/libssl/libsodium gates the heuristics that only make sense for
+/// statically linked crypto.
+pub fn scan_signatures(data: &[u8], needed: &[String]) -> SignatureScan {
     use memchr::memmem;
 
+    let links_libcrypto = links(needed, "libcrypto.so");
+    let links_libssl = links(needed, "libssl.so");
     let mut found = Vec::new();
+    let mut go_modules = Vec::new();
 
     if memmem::find(data, b"ring_core_").is_some() {
         found.push(VendoredCrypto {
@@ -350,9 +384,48 @@ pub fn scan_signatures(
         }
     }
 
+    // Statically linked libsodium: its exported symbol names in a binary
+    // that does not link the system libsodium.
+    if !links(needed, "libsodium.so")
+        && (memmem::find(data, b"sodium_init").is_some()
+            || memmem::find(data, b"crypto_pwhash_argon2id").is_some())
+    {
+        found.push(VendoredCrypto {
+            kind: VendoredCryptoKind::Libsodium,
+            version: None,
+            evidence: "libsodium symbol names without libsodium linkage".to_string(),
+        });
+    }
+
+    // Go binaries: the buildinfo magic marks them, the pclntab keeps package
+    // paths even in stripped binaries, and the module info names dependencies.
+    let is_go = memmem::find(data, b"\xff Go buildinf:").is_some();
+    if is_go {
+        go_modules = go_crypto_modules(data);
+        let has_fips_backend = go_modules_contain(data, GO_FIPS_OPENSSL_MODULE);
+        let has_boring = memmem::find(data, b"goboringcrypto").is_some();
+        if has_boring {
+            found.push(VendoredCrypto {
+                kind: VendoredCryptoKind::GoBoringCrypto,
+                version: go_version(data),
+                evidence: "goboringcrypto symbols (static BoringSSL module)".to_string(),
+            });
+        } else if !has_fips_backend
+            && !links_libcrypto
+            && memmem::find(data, b"crypto/tls.").is_some()
+        {
+            found.push(VendoredCrypto {
+                kind: VendoredCryptoKind::GoStdlibCrypto,
+                version: go_version(data),
+                evidence: "crypto/tls package without system crypto backend".to_string(),
+            });
+        }
+    }
+
     // Cipher-suite rodata without libssl linkage: embedded TLS stack.
-    // Only report when nothing above already explains it.
-    if found.is_empty() && !links_libssl {
+    // Only report when nothing above already explains it; Go's crypto/tls
+    // carries these strings and is handled above.
+    if found.is_empty() && !is_go && !links_libssl {
         if let Some(suite) = CIPHER_SUITE_STRINGS
             .iter()
             .find(|s| memmem::find(data, s).is_some())
@@ -368,7 +441,88 @@ pub fn scan_signatures(
         }
     }
 
-    found
+    SignatureScan {
+        vendored: found,
+        go_modules,
+    }
+}
+
+/// Sentinels wrapping the module info string in Go binaries
+/// (`runtime/debug.modinfo`).
+const GO_INFO_START: &[u8] = &[
+    0x30, 0x77, 0xaf, 0x0c, 0x92, 0x74, 0x08, 0x02, 0x41, 0xe1, 0xc1, 0x07, 0xe6, 0xd6, 0x18, 0xe6,
+];
+const GO_INFO_END: &[u8] = &[
+    0xf9, 0x32, 0x43, 0x31, 0x86, 0x18, 0x20, 0x72, 0x00, 0x82, 0x42, 0x10, 0x41, 0x16, 0x38, 0x69,
+];
+
+/// Extract the Go module info text between its sentinels.
+fn go_modinfo(data: &[u8]) -> Option<&str> {
+    use memchr::memmem;
+    let start = memmem::find(data, GO_INFO_START)? + GO_INFO_START.len();
+    let len = memmem::find(&data[start..], GO_INFO_END)?;
+    std::str::from_utf8(&data[start..start + len]).ok()
+}
+
+/// Whether the module info lists a dependency on the given module path.
+fn go_modules_contain(data: &[u8], module: &str) -> bool {
+    go_modinfo(data).is_some_and(|info| {
+        info.lines().any(|line| {
+            let mut fields = line.split('\t');
+            matches!(fields.next(), Some("dep" | "mod")) && fields.next() == Some(module)
+        })
+    })
+}
+
+/// Crypto-relevant Go modules from the embedded module info.
+fn go_crypto_modules(data: &[u8]) -> Vec<CryptoCrate> {
+    let Some(info) = go_modinfo(data) else {
+        return Vec::new();
+    };
+    let mut modules: Vec<CryptoCrate> = info
+        .lines()
+        .filter_map(|line| {
+            let mut fields = line.split('\t');
+            if !matches!(fields.next(), Some("dep")) {
+                return None;
+            }
+            let path = fields.next()?;
+            let version = fields.next().unwrap_or("unknown");
+            GO_CRYPTO_MODULES
+                .iter()
+                .find(|(name, _)| *name == path)
+                .map(|(_, category)| CryptoCrate {
+                    name: path.to_string(),
+                    version: version.to_string(),
+                    category: *category,
+                })
+        })
+        .collect();
+    modules.sort_by(|a, b| a.name.cmp(&b.name));
+    modules.dedup();
+    modules
+}
+
+/// Extract the Go toolchain version (e.g. "go1.24.5") from binary strings.
+fn go_version(data: &[u8]) -> Option<String> {
+    let finder = memchr::memmem::Finder::new(b"go1.");
+    for pos in finder.find_iter(data) {
+        let rest = &data[pos..];
+        let token: String = rest
+            .iter()
+            .take(16)
+            .take_while(|&&b| b.is_ascii_alphanumeric() || b == b'.')
+            .map(|&b| b as char)
+            .collect();
+        // Require go1.X.Y with digits so module paths like "go1x" don't match.
+        let numeric = token.trim_start_matches("go");
+        if numeric.matches('.').count() >= 2
+            && numeric.chars().all(|c| c.is_ascii_digit() || c == '.')
+        {
+            return Some(token);
+        }
+    }
+    None
 }
 
 /// Find an `OpenSSL X.Y.Z` version banner and return the version.
@@ -391,6 +545,90 @@ fn find_openssl_banner(data: &[u8]) -> Option<String> {
     None
 }
 
+/// One accepted finding in a crypto baseline file.
+///
+/// `path` is matched against the binary path, with `*` matching any run of
+/// characters (wheel paths embed content hashes). With no `kinds` / `crates`
+/// constraints, every finding on a matching path is accepted; otherwise every
+/// vendored kind must appear in `kinds` and every flagged crate in `crates`.
+#[derive(Debug, Clone, Deserialize)]
+pub struct BaselineEntry {
+    pub path: String,
+    #[serde(default)]
+    pub kinds: Option<Vec<String>>,
+    #[serde(default)]
+    pub crates: Option<Vec<String>>,
+    #[serde(default)]
+    pub reason: Option<String>,
+}
+
+/// Accepted findings loaded from a TOML baseline file. Findings covered by an
+/// entry are reported but do not fail the scan; only new findings do.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct Baseline {
+    #[serde(default)]
+    pub accept: Vec<BaselineEntry>,
+}
+
+impl Baseline {
+    pub fn load(path: &std::path::Path) -> anyhow::Result<Self> {
+        use anyhow::Context;
+        let content = std::fs::read_to_string(path)
+            .with_context(|| format!("failed to read baseline file {}", path.display()))?;
+        toml::from_str(&content)
+            .with_context(|| format!("failed to parse baseline file {}", path.display()))
+    }
+
+    /// Index of the entry accepting this binary's findings, if any.
+    pub fn accepts(&self, binary_path: &str, info: &CryptoInfo) -> Option<usize> {
+        self.accept
+            .iter()
+            .position(|entry| entry.accepts(binary_path, info))
+    }
+}
+
+impl BaselineEntry {
+    fn accepts(&self, binary_path: &str, info: &CryptoInfo) -> bool {
+        if !glob_match(&self.path, binary_path) {
+            return false;
+        }
+        if let Some(ref kinds) = self.kinds {
+            let all_kinds = info
+                .vendored
+                .iter()
+                .all(|v| kinds.iter().any(|k| k == &v.kind.to_string()));
+            if !all_kinds {
+                return false;
+            }
+        }
+        if let Some(ref crates) = self.crates {
+            let all_crates = info
+                .audit_crates
+                .iter()
+                .filter(|c| c.category != CryptoCrateCategory::TlsStack)
+                .all(|c| crates.contains(&c.name));
+            if !all_crates {
+                return false;
+            }
+        }
+        true
+    }
+}
+
+/// Match `pattern` against `text` where `*` matches any run of characters.
+fn glob_match(pattern: &str, text: &str) -> bool {
+    fn inner(p: &[u8], t: &[u8]) -> bool {
+        match p.split_first() {
+            None => t.is_empty(),
+            Some((b'*', rest)) => (0..=t.len()).any(|skip| inner(rest, &t[skip..])),
+            Some((c, rest)) => t
+                .split_first()
+                .is_some_and(|(tc, tr)| tc == c && inner(rest, tr)),
+        }
+    }
+    inner(pattern.as_bytes(), text.as_bytes())
+}
+
 #[cfg(test)]
 mod tests {
     use crate::crypto::*;
@@ -405,7 +643,7 @@ mod tests {
     #[test]
     fn ring_signature_with_version() {
         let data = b"garbage ring_core_0_17_14_OPENSSL_memcpy more";
-        let found = scan_signatures(data, false, false);
+        let found = scan_signatures(data, &[]).vendored;
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].kind, VendoredCryptoKind::Ring);
         assert_eq!(found[0].version.as_deref(), Some("0.17.14"));
@@ -414,7 +652,7 @@ mod tests {
     #[test]
     fn aws_lc_mangled_symbol() {
         let data = b"xx aws_lc_0_39_0_EVP_aead_aes_128_gcm yy";
-        let found = scan_signatures(data, false, false);
+        let found = scan_signatures(data, &[]).vendored;
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].kind, VendoredCryptoKind::AwsLc);
         assert_eq!(found[0].version.as_deref(), Some("0.39.0"));
@@ -423,7 +661,7 @@ mod tests {
     #[test]
     fn aws_lc_banner_only() {
         let data = b"built with AWS-LC and love";
-        let found = scan_signatures(data, false, false);
+        let found = scan_signatures(data, &[]).vendored;
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].kind, VendoredCryptoKind::AwsLc);
         assert_eq!(found[0].version, None);
@@ -432,7 +670,7 @@ mod tests {
     #[test]
     fn openssl_banner_static() {
         let data = b"common libcrypto routines OpenSSL 3.0.7 1 Nov 2022";
-        let found = scan_signatures(data, false, false);
+        let found = scan_signatures(data, &[]).vendored;
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].kind, VendoredCryptoKind::OpenSslStatic);
         assert_eq!(found[0].version.as_deref(), Some("3.0.7"));
@@ -441,7 +679,9 @@ mod tests {
     #[test]
     fn openssl_banner_ignored_when_dynamic() {
         let data = b"common libcrypto routines OpenSSL 3.0.7 1 Nov 2022";
-        assert!(scan_signatures(data, true, false).is_empty());
+        assert!(scan_signatures(data, &["libcrypto.so.3".to_string()])
+            .vendored
+            .is_empty());
     }
 
     #[test]
@@ -449,19 +689,19 @@ mod tests {
         // git's scalar embeds OPENSSL_VERSION_TEXT for `scalar diagnose`
         // without containing any OpenSSL code.
         let data = b"libcurl: %s OpenSSL 3.2.2 4 Jun 2024 OpenSSL: %s";
-        assert!(scan_signatures(data, false, false).is_empty());
+        assert!(scan_signatures(data, &[]).vendored.is_empty());
     }
 
     #[test]
     fn openssl_prose_not_matched() {
         let data = b"see the OpenSSL docs for details";
-        assert!(scan_signatures(data, false, false).is_empty());
+        assert!(scan_signatures(data, &[]).vendored.is_empty());
     }
 
     #[test]
     fn embedded_tls_cipher_suite() {
         let data = b"handshake TLS_AES_128_GCM_SHA256 done";
-        let found = scan_signatures(data, false, false);
+        let found = scan_signatures(data, &[]).vendored;
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].kind, VendoredCryptoKind::EmbeddedTls);
     }
@@ -469,13 +709,15 @@ mod tests {
     #[test]
     fn cipher_suite_ignored_when_libssl_linked() {
         let data = b"handshake TLS_AES_128_GCM_SHA256 done";
-        assert!(scan_signatures(data, false, true).is_empty());
+        assert!(scan_signatures(data, &["libssl.so.3".to_string()])
+            .vendored
+            .is_empty());
     }
 
     #[test]
     fn cipher_suite_not_double_reported() {
         let data = b"ring_core_0_17_14_x TLS_AES_128_GCM_SHA256";
-        let found = scan_signatures(data, false, false);
+        let found = scan_signatures(data, &[]).vendored;
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].kind, VendoredCryptoKind::Ring);
     }
@@ -483,7 +725,7 @@ mod tests {
     #[test]
     fn clean_binary_no_findings() {
         let data = b"just a normal binary with strings in it";
-        assert!(scan_signatures(data, false, false).is_empty());
+        assert!(scan_signatures(data, &[]).vendored.is_empty());
     }
 
     #[test]
@@ -521,6 +763,135 @@ mod tests {
         assert_eq!(mangled_version(b"0_17_14_foo"), Some("0.17.14".to_string()));
         assert_eq!(mangled_version(b"0_17_x"), None);
         assert_eq!(mangled_version(b"abc"), None);
+    }
+
+    fn go_binary(modinfo: &str, extra: &[u8]) -> Vec<u8> {
+        let mut data = b"\xff Go buildinf:\x08\x02 go1.24.5 ".to_vec();
+        data.extend_from_slice(GO_INFO_START);
+        data.extend_from_slice(modinfo.as_bytes());
+        data.extend_from_slice(GO_INFO_END);
+        data.extend_from_slice(extra);
+        data
+    }
+
+    #[test]
+    fn libsodium_static() {
+        let data = b"xx sodium_init yy";
+        let found = scan_signatures(data, &[]).vendored;
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].kind, VendoredCryptoKind::Libsodium);
+    }
+
+    #[test]
+    fn libsodium_ignored_when_dynamic() {
+        let data = b"xx sodium_init yy";
+        assert!(scan_signatures(data, &["libsodium.so.23".to_string()])
+            .vendored
+            .is_empty());
+    }
+
+    #[test]
+    fn go_stdlib_crypto_detected() {
+        let data = go_binary(
+            "path\texample.com/app\ndep\tgolang.org/x/crypto\tv0.31.0\th1:abc\n",
+            b" crypto/tls.(*Conn).Handshake ",
+        );
+        let scan = scan_signatures(&data, &[]);
+        assert_eq!(scan.vendored.len(), 1);
+        assert_eq!(scan.vendored[0].kind, VendoredCryptoKind::GoStdlibCrypto);
+        assert_eq!(scan.vendored[0].version.as_deref(), Some("go1.24.5"));
+        assert_eq!(scan.go_modules.len(), 1);
+        assert_eq!(scan.go_modules[0].name, "golang.org/x/crypto");
+        assert_eq!(scan.go_modules[0].version, "v0.31.0");
+    }
+
+    #[test]
+    fn go_boringcrypto_detected() {
+        let data = go_binary("path\texample.com/app\n", b" goboringcrypto_AES ");
+        let scan = scan_signatures(&data, &[]);
+        assert_eq!(scan.vendored.len(), 1);
+        assert_eq!(scan.vendored[0].kind, VendoredCryptoKind::GoBoringCrypto);
+    }
+
+    #[test]
+    fn go_fips_backend_suppresses_stdlib_finding() {
+        let data = go_binary(
+            "path\texample.com/app\ndep\tgithub.com/golang-fips/openssl\tv2.0.0\th1:x\n",
+            b" crypto/tls.(*Conn).Handshake ",
+        );
+        assert!(scan_signatures(&data, &[]).vendored.is_empty());
+    }
+
+    #[test]
+    fn go_binary_skips_cipher_suite_heuristic() {
+        let data = go_binary("path\texample.com/app\n", b" TLS_AES_128_GCM_SHA256 ");
+        // Not linked against libcrypto, has cipher suites, but no crypto/tls
+        // marker: a Go binary without TLS should not trip EmbeddedTls.
+        assert!(scan_signatures(&data, &[]).vendored.is_empty());
+    }
+
+    #[test]
+    fn glob_matching() {
+        assert!(glob_match("/usr/bin/uv", "/usr/bin/uv"));
+        assert!(glob_match("/opt/*/bin/uv*", "/opt/app-root/bin/uvx"));
+        assert!(glob_match(
+            "*libcrypto-*.so.1.1.1k",
+            "/x/libcrypto-bdaed0ea.so.1.1.1k"
+        ));
+        assert!(!glob_match("/usr/bin/uv", "/usr/bin/uvx"));
+        assert!(!glob_match("/opt/*/uv", "/usr/bin/uv"));
+    }
+
+    #[test]
+    fn baseline_accepts_and_constrains() {
+        let baseline: Baseline = toml::from_str(
+            r#"
+            [[accept]]
+            path = "/opt/app-root/bin/uv*"
+            kinds = ["aws-lc"]
+            crates = ["ring", "rustls", "aws-lc-rs", "aws-lc-sys"]
+            reason = "uv is a build tool"
+
+            [[accept]]
+            path = "/usr/bin/anything"
+            "#,
+        )
+        .unwrap();
+
+        let accepted = CryptoInfo {
+            vendored: vec![VendoredCrypto {
+                kind: VendoredCryptoKind::AwsLc,
+                version: None,
+                evidence: "x".to_string(),
+            }],
+            audit_crates: vec![CryptoCrate {
+                name: "ring".to_string(),
+                version: "0.17.14".to_string(),
+                category: CryptoCrateCategory::Provider,
+            }],
+            links_libcrypto: false,
+            links_libssl: false,
+        };
+        assert_eq!(baseline.accepts("/opt/app-root/bin/uv", &accepted), Some(0));
+        assert_eq!(
+            baseline.accepts("/opt/app-root/bin/uvx", &accepted),
+            Some(0)
+        );
+        // Unconstrained entry accepts any findings on its path
+        assert_eq!(baseline.accepts("/usr/bin/anything", &accepted), Some(1));
+
+        // A kind outside the allowed set is not accepted
+        let ring_static = CryptoInfo {
+            vendored: vec![VendoredCrypto {
+                kind: VendoredCryptoKind::Ring,
+                version: None,
+                evidence: "x".to_string(),
+            }],
+            ..accepted.clone()
+        };
+        assert_eq!(baseline.accepts("/opt/app-root/bin/uv", &ring_static), None);
+        // Wrong path is not accepted
+        assert_eq!(baseline.accepts("/usr/local/bin/other", &accepted), None);
     }
 
     #[test]

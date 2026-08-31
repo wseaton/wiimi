@@ -105,9 +105,7 @@ pub fn scan_elf_with_deps(elf_bytes: &[u8]) -> Result<ElfInfo> {
         }
     }
 
-    let links_libcrypto = needed.iter().any(|n| n.starts_with("libcrypto.so"));
-    let links_libssl = needed.iter().any(|n| n.starts_with("libssl.so"));
-    let audit_crates = audit_section
+    let mut audit_crates = audit_section
         .and_then(|(offset, size)| {
             let end = offset.saturating_add(size).min(elf_bytes.len());
             (offset < end).then(|| &elf_bytes[offset..end])
@@ -117,15 +115,19 @@ pub fn scan_elf_with_deps(elf_bytes: &[u8]) -> Result<ElfInfo> {
     let is_crypto_impl = soname
         .as_deref()
         .is_some_and(crate::crypto::is_crypto_implementation);
+    let vendored = if is_crypto_impl {
+        Vec::new()
+    } else {
+        let scan = crate::crypto::scan_signatures(elf_bytes, &needed);
+        audit_crates.extend(scan.go_modules);
+        audit_crates.sort_by(|a, b| a.name.cmp(&b.name));
+        scan.vendored
+    };
     let crypto = crate::crypto::CryptoInfo {
-        vendored: if is_crypto_impl {
-            Vec::new()
-        } else {
-            crate::crypto::scan_signatures(elf_bytes, links_libcrypto, links_libssl)
-        },
+        vendored,
         audit_crates,
-        links_libcrypto,
-        links_libssl,
+        links_libcrypto: crate::crypto::links(&needed, "libcrypto.so"),
+        links_libssl: crate::crypto::links(&needed, "libssl.so"),
     };
 
     let mut all_entries = Vec::new();
