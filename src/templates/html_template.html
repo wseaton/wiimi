@@ -1913,6 +1913,33 @@ const DATA = {{ graph_data|safe }};
     }
     html += '</div></div>';
 
+    // Vendored crypto: statically linked crypto that bypasses the system policy
+    const cryptoBins = bins.filter(b => b.crypto);
+    html += '<div class="insight-section">';
+    html += '<h4><span class="badge ' + (cryptoBins.length > 0 ? 'badge-warn' : 'badge-ok') + '">' + (cryptoBins.length > 0 ? '!' : '\u2713') + '</span> Vendored Crypto (' + cryptoBins.length + ')</h4>';
+    html += '<div class="insight-section-body">';
+    if (cryptoBins.length === 0) {
+      html += '<div style="font-size:10px;color:var(--text-dim)">No statically linked crypto detected. TLS goes through the system libraries and follows the host crypto policy.</div>';
+    } else {
+      html += '<div style="font-size:9px;color:var(--text-dim);margin-bottom:4px">These binaries carry their own crypto implementation and ignore the host crypto policy, FIPS mode included. Fix by bumping or rebuilding the owning package.</div>';
+      for (const b of cryptoBins.sort((a, b2) => a.path.localeCompare(b2.path))) {
+        const c = b.crypto;
+        const linkage = c.links_libcrypto ? 'links libcrypto' : (c.links_libssl ? 'links libssl only' : 'no system TLS linkage');
+        html += '<div class="collision-group">';
+        html += '<div class="soname">' + escHtml(b.path) + '</div>';
+        html += '<div class="path-entry"><span>' + escHtml(linkage) + (b.crypto_owner ? ' \u00b7 ' + escHtml(b.crypto_owner) : '') + '</span><span class="size">' + formatSize(b.size) + '</span></div>';
+        for (const v of (c.vendored || [])) {
+          html += '<div class="path-entry"><span style="color:var(--yellow)">' + escHtml(v.kind) + (v.version ? ' ' + escHtml(v.version) : '') + '</span><span style="font-size:9px;color:var(--text-dim)">' + escHtml(v.evidence) + '</span></div>';
+        }
+        const crates = (c.audit_crates || []).map(cr => cr.name + ' ' + cr.version);
+        if (crates.length > 0) {
+          html += '<div class="path-entry"><span style="font-size:9px;color:var(--text-dim);word-break:break-all">crates: ' + escHtml(crates.join(', ')) + '</span></div>';
+        }
+        html += '</div>';
+      }
+    }
+    html += '</div></div>';
+
     // 2. Forward compatibility gaps: CUDA binaries with SASS but no PTX
     const noPtx = bins.filter(b => b.cubins.length > 0 && b.ptx.length === 0);
     html += '<div class="insight-section">';
