@@ -71,6 +71,8 @@ pub struct ElfInfo {
     pub rpath: Vec<String>,
     /// DT_RUNPATH entries (preferred over DT_RPATH by modern linkers).
     pub runpath: Vec<String>,
+    /// Vendored crypto findings (byte signatures + cargo-auditable metadata).
+    pub crypto: crate::crypto::CryptoInfo,
 }
 
 /// Scan an ELF binary for both CUDA fatbin entries and DT_NEEDED dependencies.
@@ -87,21 +89,44 @@ pub fn scan_elf_with_deps(elf_bytes: &[u8]) -> Result<ElfInfo> {
     let rpath: Vec<String> = elf.rpaths.iter().map(|s| s.to_string()).collect();
     let runpath: Vec<String> = elf.runpaths.iter().map(|s| s.to_string()).collect();
 
-    // Find .nv_fatbin sections
-    let sections: Vec<(usize, usize)> = elf
-        .section_headers
-        .iter()
-        .filter_map(|sh| {
-            let name = elf.shdr_strtab.get_at(sh.sh_name)?;
-            if name == ".nv_fatbin" {
-                let offset = sh.sh_offset as usize;
-                let size = sh.sh_size as usize;
-                Some((offset, size))
-            } else {
-                None
-            }
+    // Find .nv_fatbin and cargo-auditable .dep-v0 sections in one pass
+    let mut sections: Vec<(usize, usize)> = Vec::new();
+    let mut audit_section: Option<(usize, usize)> = None;
+    for sh in &elf.section_headers {
+        let Some(name) = elf.shdr_strtab.get_at(sh.sh_name) else {
+            continue;
+        };
+        let offset = sh.sh_offset as usize;
+        let size = sh.sh_size as usize;
+        match name {
+            ".nv_fatbin" => sections.push((offset, size)),
+            ".dep-v0" => audit_section = Some((offset, size)),
+            _ => {}
+        }
+    }
+
+    let links_libcrypto = needed.iter().any(|n| n.starts_with("libcrypto.so"));
+    let links_libssl = needed.iter().any(|n| n.starts_with("libssl.so"));
+    let audit_crates = audit_section
+        .and_then(|(offset, size)| {
+            let end = offset.saturating_add(size).min(elf_bytes.len());
+            (offset < end).then(|| &elf_bytes[offset..end])
         })
-        .collect();
+        .and_then(crate::crypto::parse_cargo_audit)
+        .unwrap_or_default();
+    let is_crypto_impl = soname
+        .as_deref()
+        .is_some_and(crate::crypto::is_crypto_implementation);
+    let crypto = crate::crypto::CryptoInfo {
+        vendored: if is_crypto_impl {
+            Vec::new()
+        } else {
+            crate::crypto::scan_signatures(elf_bytes, links_libcrypto, links_libssl)
+        },
+        audit_crates,
+        links_libcrypto,
+        links_libssl,
+    };
 
     let mut all_entries = Vec::new();
     for (offset, size) in sections {
@@ -122,6 +147,7 @@ pub fn scan_elf_with_deps(elf_bytes: &[u8]) -> Result<ElfInfo> {
         soname,
         rpath,
         runpath,
+        crypto,
     })
 }
 

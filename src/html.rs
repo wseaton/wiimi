@@ -247,6 +247,7 @@ mod tests {
                 rpath: vec![],
                 runpath: vec![],
                 layer_index: None,
+                crypto: Default::default(),
             }],
             effective_cc_min: Some(cc(7, 0)),
             effective_cc_max: Some(cc(9, 0)),
@@ -329,6 +330,7 @@ mod tests {
                 rpath: vec![],
                 runpath: vec![],
                 layer_index: None,
+                crypto: Default::default(),
             },
             BinaryScanResult {
                 path: "/b.so".to_string(),
@@ -341,6 +343,7 @@ mod tests {
                 rpath: vec![],
                 runpath: vec![],
                 layer_index: None,
+                crypto: Default::default(),
             },
         ];
         let (min, max) = super::compute_sm_range(&binaries);

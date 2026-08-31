@@ -1,6 +1,7 @@
 #![allow(dead_code)]
 
 mod cache;
+mod crypto;
 mod diff;
 mod discover;
 mod fatbin;
@@ -72,6 +73,36 @@ enum Command {
         /// Open the output file after writing (HTML only)
         #[arg(long)]
         open: bool,
+    },
+
+    /// Scan an OCI image for vendored crypto (FIPS compliance check).
+    ///
+    /// Reports binaries carrying statically linked crypto (ring, AWS-LC,
+    /// BoringSSL, vendored OpenSSL) or crypto crates from cargo-auditable
+    /// metadata. Exits 1 when any binary bypasses the system crypto policy.
+    Crypto {
+        /// Image reference, or path to a saved scan JSON
+        image: String,
+
+        /// Output findings as JSON
+        #[arg(long)]
+        json: bool,
+
+        /// Path to Docker config JSON for registry authentication
+        #[arg(long, env = "DOCKER_CONFIG")]
+        docker_config: Option<String>,
+
+        /// Registry hostnames to access over HTTP instead of HTTPS
+        #[arg(long)]
+        insecure_registry: Vec<String>,
+
+        /// Skip all caches (blob + parse) and pull everything fresh
+        #[arg(long)]
+        no_cache: bool,
+
+        /// Re-parse all binaries (skip parse cache) but keep blob cache
+        #[arg(long)]
+        reparse: bool,
     },
 
     /// Discover new tags from registries and scan them
@@ -229,6 +260,66 @@ async fn main() -> Result<()> {
                 }
             } else {
                 print!("{}", scan::format_report(&result));
+            }
+        }
+
+        Command::Crypto {
+            image,
+            json,
+            docker_config,
+            insecure_registry,
+            no_cache,
+            reparse,
+        } => {
+            let dockerconfig_bytes = load_docker_config(docker_config.as_deref())?;
+            let result = resolve_scan_result(
+                &image,
+                dockerconfig_bytes.as_deref(),
+                &insecure_registry,
+                !no_cache,
+                !no_cache && !reparse,
+                !json,
+            )
+            .await?;
+
+            if json {
+                #[derive(serde::Serialize)]
+                struct CryptoFinding<'a> {
+                    path: &'a str,
+                    crypto: &'a crypto::CryptoInfo,
+                }
+                let findings: Vec<CryptoFinding> = result
+                    .binaries
+                    .iter()
+                    .filter(|b| !b.crypto.is_empty())
+                    .map(|b| CryptoFinding {
+                        path: &b.path,
+                        crypto: &b.crypto,
+                    })
+                    .collect();
+                let output = serde_json::to_string_pretty(&findings)
+                    .context("failed to serialize crypto findings")?;
+                println!("{output}");
+            } else {
+                let report = scan::format_crypto_findings(&result);
+                if report.is_empty() {
+                    println!("No crypto findings.");
+                } else {
+                    print!("{report}");
+                }
+            }
+
+            let violations = result
+                .binaries
+                .iter()
+                .filter(|b| b.crypto.has_vendored_crypto())
+                .count();
+            if violations > 0 {
+                tracing::warn!(
+                    binaries = violations,
+                    "vendored crypto found, exiting nonzero"
+                );
+                std::process::exit(1);
             }
         }
 

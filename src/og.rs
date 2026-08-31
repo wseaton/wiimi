@@ -308,6 +308,7 @@ mod tests {
                 rpath: vec![],
                 runpath: vec![],
                 layer_index: None,
+                crypto: Default::default(),
             }],
             effective_cc_min: Some(cc(7, 0)),
             effective_cc_max: Some(cc(9, 0)),

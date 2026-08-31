@@ -628,6 +628,7 @@ mod tests {
             rpath: vec![],
             runpath: vec![],
             layer_index: None,
+            crypto: Default::default(),
         }
     }
 
