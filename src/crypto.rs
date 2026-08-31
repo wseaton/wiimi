@@ -27,14 +27,17 @@ pub enum VendoredCryptoKind {
     /// AWS-LC via aws-lc-sys (default rustls provider since 0.23).
     AwsLc,
     /// BoringSSL via boring-sys.
+    #[serde(rename = "boringssl")]
     BoringSsl,
     /// Statically linked OpenSSL (openssl-src / vendored feature).
+    #[serde(rename = "openssl-static")]
     OpenSslStatic,
     /// Statically linked libsodium (libsodium-sys / sodiumoxide).
     Libsodium,
     /// Go stdlib crypto/tls compiled in (default pure-Go crypto).
     GoStdlibCrypto,
     /// Go BoringCrypto (goboring): statically linked BoringSSL module.
+    #[serde(rename = "go-boringcrypto")]
     GoBoringCrypto,
     /// TLS cipher-suite name strings present without libssl linkage:
     /// an embedded TLS stack of unknown implementation.

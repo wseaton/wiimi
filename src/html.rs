@@ -23,6 +23,11 @@ struct CompactBinary {
     package: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     layer_index: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    crypto: Option<crate::crypto::CryptoInfo>,
+    /// Owner of a binary with crypto findings (RPM/dpkg or Python wheel).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    crypto_owner: Option<String>,
 }
 
 /// Top-level data structure injected into the HTML template as JSON.
@@ -95,6 +100,10 @@ pub fn render_html_with_og(
                 runpath: b.runpath.clone(),
                 package: result.environment.file_owners.get(&b.path).cloned(),
                 layer_index: b.layer_index,
+                crypto: (!b.crypto.is_empty()).then(|| b.crypto.clone()),
+                crypto_owner: (!b.crypto.is_empty())
+                    .then(|| crate::scan::attribute_owner(result, &b.path))
+                    .flatten(),
             }
         })
         .collect();
