@@ -192,7 +192,7 @@
       <tr>
         <td><a href="scan/{{ scan.slug }}.html">{{ scan.short_name }}</a></td>
         <td>{{ scan.cuda }}</td>
-        <td{% if scan.cc_note %} class="cc-flagged" title="{{ scan.cc_note }}"{% endif %}>{{ scan.cc_range }}{% if scan.cc_note %} <span class="cc-flag">!</span>{% endif %}</td>
+        <td>{% if scan.cc_note %}<span class="cc-none" title="{{ scan.cc_note }}">{{ scan.cc_range }}</span>{% else %}{{ scan.cc_range }}{% endif %}</td>
         <td>{{ scan.cc_bar|safe }}</td>
 {% if show_ptx %}        <td class="{{ scan.ptx_class }}">{{ scan.ptx_label }}</td>
 {% endif %}        <td>{{ scan.bin_count }}</td>

@@ -224,6 +224,31 @@ fn sm_gen_class(sm: u32) -> &'static str {
     }
 }
 
+/// Render the effective capability range for the index, with a note when it is empty.
+///
+/// `cc_min` is the highest per-binary floor and `cc_max` the lowest per-binary
+/// ceiling, so together they describe the architectures *every* binary supports.
+/// A floor above the ceiling means that intersection is empty. The image still
+/// runs; there is just no single architecture covering all of its binaries, which
+/// is ordinary for a large image mixing narrowly targeted libraries. Printing the
+/// endpoints in either order would claim the opposite of what holds.
+fn index_cc_range(
+    cc_min: Option<&ComputeCapability>,
+    cc_max: Option<&ComputeCapability>,
+) -> (String, String) {
+    match (cc_min, cc_max) {
+        (Some(min), Some(max)) if sm_value(min) > sm_value(max) => (
+            "none".to_string(),
+            format!(
+                "no architecture is supported by every binary: the highest floor \
+                 ({min}) is above the lowest ceiling ({max})"
+            ),
+        ),
+        (Some(min), Some(max)) => (format!("{min} - {max}"), String::new()),
+        _ => ("-".to_string(), String::new()),
+    }
+}
+
 /// Render the shared-scale capability strip for one scan.
 fn cc_bar_html(scan: &ScanResult, scale: &[u32]) -> String {
     use std::collections::HashSet;
@@ -480,19 +505,10 @@ pub fn generate_site(config: &SiteConfig, store: &ScanStore) -> Result<()> {
         let scan_rows: Vec<IndexScanRow> = scans
             .iter()
             .map(|scan| {
-                // cc_min > cc_max happens when a binary carries a stale or stub
-                // cubin. Print the endpoints in order so the range is readable,
-                // and flag it rather than passing it off as a normal range.
-                let (cc_range, cc_note) = match (&scan.effective_cc_min, &scan.effective_cc_max) {
-                    (Some(min), Some(max)) if sm_value(min) > sm_value(max) => (
-                        format!("{max} - {min}"),
-                        format!(
-                            "reported as {min} - {max}; a binary carries a stale or stub cubin"
-                        ),
-                    ),
-                    (Some(min), Some(max)) => (format!("{min} - {max}"), String::new()),
-                    _ => ("-".to_string(), String::new()),
-                };
+                let (cc_range, cc_note) = index_cc_range(
+                    scan.effective_cc_min.as_ref(),
+                    scan.effective_cc_max.as_ref(),
+                );
                 IndexScanRow {
                     image: scan.image.clone(),
                     slug: slug_for_image(&scan.image),
@@ -599,9 +615,9 @@ mod tests {
     use crate::nvidia::ComputeCapability;
     use crate::scan::{BinaryScanResult, EnvironmentInfo, ImageMetadata, ScanResult};
     use crate::site::{
-        all_pairs, catalog_sm_scale, cc_bar_html, family_subtitle, numeric_sort_key,
-        resolve_family_scans, short_image_name, slug_for_image, sm_gen_class, sm_value,
-        FamilyConfig, SiteConfig, TagOrder,
+        all_pairs, catalog_sm_scale, cc_bar_html, family_subtitle, index_cc_range,
+        numeric_sort_key, resolve_family_scans, short_image_name, slug_for_image, sm_gen_class,
+        sm_value, FamilyConfig, SiteConfig, TagOrder,
     };
     use crate::store::ScanStore;
 
@@ -710,6 +726,37 @@ mod tests {
         assert!(subtitle.contains("by version"), "{subtitle}");
     }
 
+    #[test]
+    fn cc_range_reports_an_empty_intersection_as_none() {
+        // cc_min is the highest per-binary floor, cc_max the lowest ceiling, so
+        // floor > ceiling means no architecture is common to every binary.
+        // Printing "5.2 - 12.0" would claim the widest possible support.
+        let (range, note) = index_cc_range(Some(&cc(12, 0)), Some(&cc(5, 2)));
+        assert_eq!(range, "none");
+        assert!(note.contains("every binary"), "{note}");
+        assert!(note.contains("12.0") && note.contains("5.2"), "{note}");
+    }
+
+    #[test]
+    fn cc_range_prints_a_real_intersection() {
+        let (range, note) = index_cc_range(Some(&cc(7, 0)), Some(&cc(9, 0)));
+        assert_eq!(range, "7.0 - 9.0");
+        assert!(note.is_empty());
+    }
+
+    #[test]
+    fn cc_range_handles_a_single_point_intersection() {
+        let (range, note) = index_cc_range(Some(&cc(9, 0)), Some(&cc(9, 0)));
+        assert_eq!(range, "9.0 - 9.0");
+        assert!(note.is_empty());
+    }
+
+    #[test]
+    fn cc_range_without_endpoints_is_a_dash() {
+        assert_eq!(index_cc_range(None, None).0, "-");
+        assert_eq!(index_cc_range(Some(&cc(9, 0)), None).0, "-");
+    }
+
     fn test_scan(image: &str) -> ScanResult {
         ScanResult {
             image: image.to_string(),
@@ -730,6 +777,7 @@ mod tests {
                 rpath: vec![],
                 runpath: vec![],
                 layer_index: None,
+                crypto: Default::default(),
             }],
             effective_cc_min: Some(cc(7, 0)),
             effective_cc_max: Some(cc(9, 0)),

@@ -119,11 +119,12 @@ a { color: var(--accent); }
 .cc-bar .c.ptx { background: transparent; box-shadow: inset 0 0 0 1px var(--sm-ptx); }
 .cc-bar .c.empty { background: #e3e9ef; }
 
-/* Flag a capability range whose endpoints arrived inverted. */
-.cc-flag {
-  color: var(--red);
-  font-weight: 700;
+/* An empty capability intersection is an ordinary state for a large image, not
+   an error, so it reads as absent rather than alarming. */
+.cc-none {
+  color: var(--text-dim);
   cursor: help;
+  border-bottom: 1px dotted var(--border-strong);
 }
 
 @media (prefers-reduced-motion: reduce) {

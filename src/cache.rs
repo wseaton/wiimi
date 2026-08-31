@@ -189,6 +189,8 @@ pub struct CachedElfResult {
     pub soname: Option<String>,
     pub rpath: Vec<String>,
     pub runpath: Vec<String>,
+    #[serde(default)]
+    pub crypto: crate::crypto::CryptoInfo,
 }
 
 /// Compute a truncated SHA256 hex digest of the currently running binary.
@@ -557,6 +559,7 @@ mod tests {
             soname: Some("libfoo.so".to_string()),
             rpath: vec![],
             runpath: vec!["/usr/lib64".to_string()],
+            crypto: Default::default(),
         };
 
         cache.put("deadbeef1234", &result);

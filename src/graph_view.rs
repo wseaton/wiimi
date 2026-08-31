@@ -978,7 +978,9 @@ mod tests {
     #[test]
     fn dir_key_dist_packages() {
         assert_eq!(
-            dir_key("/usr/local/lib/python3.12/dist-packages/flashinfer_jit_cache/jit_cache/foo/foo.so"),
+            dir_key(
+                "/usr/local/lib/python3.12/dist-packages/flashinfer_jit_cache/jit_cache/foo/foo.so"
+            ),
             "flashinfer_jit_cache"
         );
     }

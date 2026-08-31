@@ -45,6 +45,7 @@ fn try_resolve_from_manifest(
             rpath: cached.rpath,
             runpath: cached.runpath,
             layer_index: Some(layer_idx),
+            crypto: cached.crypto,
         });
     }
 
@@ -125,6 +126,9 @@ pub struct BinaryScanResult {
     /// Index of the manifest layer this binary was extracted from.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub layer_index: Option<usize>,
+    /// Vendored crypto findings (byte signatures + cargo-auditable metadata).
+    #[serde(default, skip_serializing_if = "crate::crypto::CryptoInfo::is_empty")]
+    pub crypto: crate::crypto::CryptoInfo,
 }
 
 /// A node in the ELF dependency graph.
@@ -335,6 +339,22 @@ fn detect_soname_collisions(soname_index: &HashMap<String, Vec<String>>) -> Vec<
         ));
     }
     warnings
+}
+
+/// Warn about binaries carrying crypto that bypasses the system libcrypto,
+/// and therefore the host's FIPS / crypto policy.
+fn detect_vendored_crypto(binaries: &[BinaryScanResult]) -> Vec<String> {
+    binaries
+        .iter()
+        .filter(|b| b.crypto.has_vendored_crypto())
+        .map(|b| {
+            format!(
+                "vendored crypto in {}: {} (bypasses system crypto policy)",
+                b.path,
+                b.crypto.summary()
+            )
+        })
+        .collect()
 }
 
 /// Collect all paths reachable from the graph roots.
@@ -1331,7 +1351,8 @@ pub async fn scan_image(
 
     // Compute effective range using only reachable CUDA binaries
     let range = compute_effective_range(&reachable_cuda);
-    let warnings = collision_warnings;
+    let mut warnings = collision_warnings;
+    warnings.extend(detect_vendored_crypto(&scan_results));
 
     // Build layer history from OCI config
     let history = image::parse_history(&config_json);
@@ -1443,6 +1464,7 @@ fn scan_single_binary(
                 rpath: cached.rpath,
                 runpath: cached.runpath,
                 layer_index,
+                crypto: cached.crypto,
             });
         }
     }
@@ -1488,6 +1510,7 @@ fn scan_single_binary(
                 soname: elf_info.soname.clone(),
                 rpath: elf_info.rpath.clone(),
                 runpath: elf_info.runpath.clone(),
+                crypto: elf_info.crypto.clone(),
             },
         );
     }
@@ -1503,6 +1526,7 @@ fn scan_single_binary(
         rpath: elf_info.rpath,
         runpath: elf_info.runpath,
         layer_index,
+        crypto: elf_info.crypto,
     })
 }
 
@@ -1664,6 +1688,8 @@ pub fn format_report(result: &ScanResult) -> String {
         }
     }
 
+    out.push_str(&format_crypto_findings(result));
+
     // Dormant summary
     if result.dormant_count > 0 {
         out.push_str(&format!(
@@ -1709,6 +1735,44 @@ pub fn format_report(result: &ScanResult) -> String {
     }
     out.push('\n');
 
+    out
+}
+
+/// Render the crypto findings section: binaries with vendored crypto or
+/// crypto-relevant crates, with their system TLS linkage.
+pub fn format_crypto_findings(result: &ScanResult) -> String {
+    let mut out = String::new();
+    let crypto_hits: Vec<&BinaryScanResult> = result
+        .binaries
+        .iter()
+        .filter(|b| !b.crypto.is_empty())
+        .collect();
+    if crypto_hits.is_empty() {
+        return out;
+    }
+    out.push_str("Crypto findings:\n");
+    for b in &crypto_hits {
+        let linkage = match (b.crypto.links_libcrypto, b.crypto.links_libssl) {
+            (true, _) => "links libcrypto",
+            (false, true) => "links libssl only",
+            (false, false) => "no system TLS linkage",
+        };
+        out.push_str(&format!("  {} ({linkage})\n", b.path));
+        for v in &b.crypto.vendored {
+            let ver = v.version.as_deref().unwrap_or("unknown version");
+            out.push_str(&format!(
+                "    vendored: {} {ver} [{}]\n",
+                v.kind, v.evidence
+            ));
+        }
+        for c in &b.crypto.audit_crates {
+            out.push_str(&format!(
+                "    crate: {} {} ({:?})\n",
+                c.name, c.version, c.category
+            ));
+        }
+    }
+    out.push('\n');
     out
 }
 
@@ -2078,6 +2142,7 @@ mod tests {
             rpath: vec![],
             runpath: vec![],
             layer_index: None,
+            crypto: Default::default(),
         }
     }
 
